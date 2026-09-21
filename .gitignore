@@ -1,0 +1,9 @@
+# Kredensial motor — jangan commit/share
+TelAerox155/secrets.local.json
+
+# Xcode
+xcuserdata/
+*.xcuserstate
+DerivedData/
+build/
+.DS_Store
