@@ -57,6 +57,11 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     /// (salin/simpan lewat idleView). Kredensial otomatis disensor di dalam.
     let diagLog = DiagnosticLog()
 
+    /// Rekaman sesi ke file (BLE Raw / CSV per detik) — beda dari `diagLog`:
+    /// ditulis langsung ke disk, punya limit ukuran/durasi, dan harus
+    /// dinyalakan eksplisit oleh user (start/stop), bukan buffer pasif.
+    let recorder = SessionRecorder()
+
     /// Jumlah baris log terkumpul, buat ditampilin di UI. Di-refresh 1 Hz
     /// (bukan tiap frame — frame RX bisa ~20 Hz, jangan bikin SwiftUI diff
     /// tiap 50ms) lewat `logCountTimer`.
@@ -81,11 +86,20 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         }
     }
 
-    /// Kebijakan keep-alive 0xA6: default "notifikasi saja" (058B, nol efek samping).
-    /// Disimpan supaya toggle di UI bertahan antar sesi.
-    @AppStorage("keepAlivePolicy") private var keepAlivePolicyRaw: String = KeepAlivePolicy.notifyOnly.rawValue
+    /// Toggle log diagnostik: default MATI. Menyalakan log berarti setiap frame
+    /// TX/RX mentah + tahap koneksi disimpan ke buffer `diagLog` (kredensial/VIN
+    /// tetap disensor otomatis di dalamnya) — berguna buat debug tapi bukan
+    /// sesuatu yang harus jalan terus-menerus tiap sesi normal.
+    @AppStorage("diagLogEnabled") var diagLogEnabled: Bool = false
+
+    /// Kebijakan keep-alive 0xA6: default "Penuh" (058A+058B) — hasil uji lapangan
+    /// menunjukkan ini yang paling stabil (lihat docs/research/device-log-ble).
+    /// Disimpan supaya toggle di UI bertahan antar sesi; perangkat yang sudah
+    /// pernah memilih kebijakan lain TIDAK ikut berubah (default hanya berlaku
+    /// sebelum key ini pernah ditulis).
+    @AppStorage("keepAlivePolicy") private var keepAlivePolicyRaw: String = KeepAlivePolicy.full.rawValue
     var keepAlivePolicy: KeepAlivePolicy {
-        get { KeepAlivePolicy(rawValue: keepAlivePolicyRaw) ?? .notifyOnly }
+        get { KeepAlivePolicy(rawValue: keepAlivePolicyRaw) ?? .full }
         set { keepAlivePolicyRaw = newValue.rawValue }
     }
 
@@ -100,7 +114,9 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         errorMessage = nil
         discovered.removeAll()
         authTrace.removeAll()
-        diagLog.log(.info, "=== connect() dipanggil, keepAlivePolicy=\(keepAlivePolicy.rawValue) ===")
+        if diagLogEnabled {
+            diagLog.log(.info, "=== connect() dipanggil, keepAlivePolicy=\(keepAlivePolicy.rawValue) ===")
+        }
         startLogCountTimer()
         do {
             guard let url = Bundle.main.url(forResource: "secrets.local", withExtension: "json") else {
@@ -118,19 +134,26 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
             }
             #endif
             c.onDiscovery = { [weak self] name, rssi, isMatch in
-                self?.diagLog.log(.scan, "name=\(name ?? "-") rssi=\(rssi) match=\(isMatch)")
+                if self?.diagLogEnabled == true {
+                    self?.diagLog.log(.scan, "name=\(name ?? "-") rssi=\(rssi) match=\(isMatch)")
+                }
                 Task { @MainActor in
                     self?.addDiscovery(name: name, rssi: rssi, isMatch: isMatch)
                 }
             }
             c.onAuthStage = { [weak self] stage in
-                self?.diagLog.log(.info, stage)
+                if self?.diagLogEnabled == true {
+                    self?.diagLog.log(.info, stage)
+                }
                 Task { @MainActor in
                     self?.addAuthTrace(stage)
                 }
             }
             c.onRawFrame = { [weak self] direction, message in
-                self?.diagLog.log(direction, message)
+                if self?.diagLogEnabled == true {
+                    self?.diagLog.log(direction, message)
+                }
+                self?.recorder.appendRaw(direction, message)
             }
             c.delegate = self
             client = c
@@ -159,10 +182,11 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     @MainActor
     private func addAuthTrace(_ s: String) {
         authTrace.append(s)
-        // Safety cap: trace auth 1 konek paling 2-3 baris (AA→5A→stream / AA→
-        // ditolak→bonding→gagal / AA→diem→watchdog). 20 baris kebanyakan.
-        if authTrace.count > 20 {
-            authTrace.removeFirst(authTrace.count - 20)
+        // Safety cap: 1 konek paling 2-3 baris, tapi retry berulang (disconnect
+        // → reconnect otomatis) bisa menumpuk banyak siklus dalam satu sesi idle
+        // — 50 baris cukup buat ~10 siklus reconnect tanpa kepotong.
+        if authTrace.count > 50 {
+            authTrace.removeFirst(authTrace.count - 50)
         }
     }
 
@@ -174,7 +198,9 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         vin = nil
         modelCode = nil
         setIdleTimerDisabled(false)
-        diagLog.log(.info, "=== disconnect() dipanggil user ===")
+        if diagLogEnabled {
+            diagLog.log(.info, "=== disconnect() dipanggil user ===")
+        }
         refreshLogCount()
         stopLogCountTimer()
     }
@@ -184,9 +210,15 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     private func startLogCountTimer() {
         stopLogCountTimer()
         refreshLogCount()
+        // Timer 1 Hz yang sama juga men-sampling satu baris CSV kalau rekaman
+        // format CSV sedang aktif (appendCSVRow no-op kalau tidak) — cukup satu
+        // timer buat dua keperluan, tidak perlu Timer terpisah 1 Hz lagi.
         let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self else { return }
-            Task { @MainActor in self.refreshLogCount() }
+            Task { @MainActor in
+                self.refreshLogCount()
+                self.recorder.appendCSVRow(snapshot: self.snapshot, vin: self.vin, modelCode: self.modelCode)
+            }
         }
         RunLoop.main.add(t, forMode: .common)
         logCountTimer = t

@@ -6,14 +6,15 @@ import UIKit
 
 struct ContentView: View {
     @StateObject private var store = TelemetryStore()
-    @AppStorage("keepAlivePolicy") private var keepAlivePolicyRaw: String = KeepAlivePolicy.notifyOnly.rawValue
-    @State private var showLogExporter = false
-    @State private var showCopiedToast = false
+    // Default "Penuh" — hasil uji lapangan paling stabil. Perangkat yang sudah
+    // pernah menyimpan pilihan lain tidak ikut berubah (lihat TelemetryStore).
+    @AppStorage("keepAlivePolicy") private var keepAlivePolicyRaw: String = KeepAlivePolicy.full.rawValue
     @State private var showLogSheet = false
-    // Di-set SEKALI saat tombol "Simpan" ditekan, bukan dibaca ulang tiap body
-    // dievaluasi (snapshot telemetri berubah ~20 Hz saat streaming — building
-    // ulang string log yang bisa ribuan baris tiap frame itu boros).
-    @State private var logSnapshotForExport = ""
+    @State private var showAuthCopiedToast = false
+    // Kartu sensor yang di-tap → tampilkan penjelasan (SensorCatalog). key
+    // di sini merujuk ke MetricValue.key / MappingItem.key yang sama dipakai
+    // buat decode, bukan string bebas.
+    @State private var selectedSensorKey: String?
 
     private let accent = Color(red: 0.20, green: 0.56, blue: 0.95)
 
@@ -43,19 +44,15 @@ struct ContentView: View {
         } message: {
             Text(store.errorMessage ?? "Terjadi kesalahan")
         }
-        .sheet(isPresented: $showLogSheet) { logSheet }
-        .fileExporter(isPresented: $showLogExporter,
-                      document: LogDocument(text: logSnapshotForExport),
-                      contentType: .plainText,
-                      defaultFilename: logFileName) { _ in }
-    }
-
-    /// "log_2026-09-22_20-14-05.txt" — cukup unik + gampang dibaca kalau
-    /// beberapa kali export dalam satu sesi ujicoba di motor.
-    private var logFileName: String {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        return "telaerox-log_\(f.string(from: Date()))"
+        .sheet(isPresented: $showLogSheet) {
+            LogSheetView(store: store, recorder: store.recorder, accent: accent)
+        }
+        .sheet(item: Binding(
+            get: { selectedSensorKey.map(SensorSheetItem.init) },
+            set: { selectedSensorKey = $0?.key }
+        )) { item in
+            SensorInfoSheet(key: item.key, accent: accent)
+        }
     }
 
     // MARK: - Header
@@ -193,20 +190,23 @@ struct ContentView: View {
                 .fill(LinearGradient(colors: [accent.opacity(0.35), accent.opacity(0.12)],
                                      startPoint: .topLeading, endPoint: .bottomTrailing))
             HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Label("Putaran Mesin", systemImage: "gauge.high")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.secondary)
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(value)
-                            .font(.system(size: 64, weight: .heavy, design: .rounded))
-                            .foregroundStyle(.white)
-                            .contentTransition(.numericText())
-                        Text("rpm")
+                Button { selectedSensorKey = "rpm" } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label("Putaran Mesin", systemImage: "gauge.high")
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(.secondary)
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(value)
+                                .font(.system(size: 64, weight: .heavy, design: .rounded))
+                                .foregroundStyle(.white)
+                                .contentTransition(.numericText())
+                            Text("rpm")
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
+                .buttonStyle(.plain)
                 Spacer()
                 speedRing
             }
@@ -218,28 +218,36 @@ struct ContentView: View {
 
     private var speedRing: some View {
         let speed = store.snapshot.speed ?? 0
-        return ZStack {
-            Circle()
-                .stroke(Color.white.opacity(0.12), lineWidth: 8)
-            Circle()
-                .trim(from: 0, to: min(speed / 140, 1))
-                .stroke(accent, style: StrokeStyle(lineWidth: 8, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-            VStack(spacing: 0) {
-                Text(String(format: "%.0f", speed))
-                    .font(.system(size: 24, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-                Text("km/h")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+        return Button { selectedSensorKey = "speed" } label: {
+            ZStack {
+                Circle()
+                    .stroke(Color.white.opacity(0.12), lineWidth: 8)
+                Circle()
+                    .trim(from: 0, to: min(speed / 140, 1))
+                    .stroke(accent, style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                VStack(spacing: 0) {
+                    Text(String(format: "%.0f", speed))
+                        .font(.system(size: 24, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                    Text("km/h")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
+            .frame(width: 84, height: 84)
         }
-        .frame(width: 84, height: 84)
+        .buttonStyle(.plain)
         .animation(.snappy, value: speed)
     }
 
+    /// Kalau `m.key` ada di `SensorCatalog`, kartu bisa di-tap untuk lihat
+    /// penjelasan sensor (apa yang diukur, sumber frame/ID, kredibilitas, dan
+    /// catatan tambahan — mis. kenapa tegangan aki bisa sedikit beda dari
+    /// dashboard fisik). Kartu tanpa entri katalog (belum didokumentasikan)
+    /// tetap tampil normal, cuma tidak interaktif.
     private func metricCard(_ m: MetricValue, corner: CGFloat = 18) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let content = VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 5) {
                 Image(systemName: m.icon)
                     .font(.caption)
@@ -248,6 +256,12 @@ struct ContentView: View {
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                Spacer(minLength: 0)
+                if m.key != nil, SensorCatalog.info(for: m.key!) != nil {
+                    Image(systemName: "info.circle")
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.35))
+                }
             }
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(m.valueText)
@@ -265,6 +279,15 @@ struct ContentView: View {
         .padding(16)
         .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: corner))
         .animation(.snappy, value: m.valueText)
+
+        return Group {
+            if let key = m.key, SensorCatalog.info(for: key) != nil {
+                Button { selectedSensorKey = key } label: { content }
+                    .buttonStyle(.plain)
+            } else {
+                content
+            }
+        }
     }
 
     private var speedMetric: MetricValue {
@@ -333,14 +356,15 @@ struct ContentView: View {
         metric("injection", icon: "drop.fill", title: "Jumlah Injeksi", decimals: 2)
     }
 
-    /// Field frame 0x5B (`ecuPowerOnTime`, `ignOnCount`) kredibilitasnya SEDANG:
-    /// struktur ByteNo sudah tervalidasi ke capture nyata tapi faktor/offset
-    /// belum dicross-check ke sumber independen kedua (beda dari RPM/odometer
-    /// yang sudah). Lihat docs/research/02-mapping-reanalysis.md §3.
+    /// Field frame 0x5B (`ecuPowerOnTime`, `ignOnCount`) kredibilitasnya TINGGI:
+    /// selain struktur ByteNo tervalidasi ke capture nyata, faktor/offset kini
+    /// juga tercross-check ke sumber independen kedua (dua log lapangan berjarak
+    /// beberapa menit, nilai naik konsisten dengan selisih wall-clock).
+    /// Lihat docs/research/02-mapping-reanalysis.md §3.
     private var extraInfoSection: some View {
         VStack(spacing: 8) {
             HStack {
-                Text("Info Tambahan (belum tervalidasi penuh)")
+                Text("Info Tambahan")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.white)
                 Spacer()
@@ -349,17 +373,27 @@ struct ContentView: View {
                 metricCard(ecuPowerOnMetric, corner: 18)
                 metricCard(ignOnCountMetric, corner: 18)
             }
+            metricCard(fuelMetric, corner: 18)
         }
     }
 
     private var ecuPowerOnMetric: MetricValue {
         guard let d = store.snapshot.decoded("ecuPowerOnTime") else {
-            return MetricValue(icon: "power", title: "ECU Total Nyala",
+            return MetricValue(key: "ecuPowerOnTime", icon: "power", title: "ECU Total Nyala",
                                valueText: "--", unit: "", color: .secondary)
         }
         let hari = d.value / 86_400
-        return MetricValue(icon: "power", title: "ECU Total Nyala",
+        return MetricValue(key: "ecuPowerOnTime", icon: "power", title: "ECU Total Nyala",
                            valueText: String(format: "%.1f", hari), unit: "hari", color: .white)
+    }
+
+    /// Placeholder — BELUM ada mapping BBM yang terverifikasi (lihat
+    /// SensorCatalog untuk penjelasan lengkap kenapa). Sengaja tetap
+    /// ditampilkan (bukan disembunyikan) supaya transparan ke user bahwa ini
+    /// gap riset yang diketahui, bukan bug/lupa.
+    private var fuelMetric: MetricValue {
+        MetricValue(key: "fuel", icon: "fuelpump", title: "Sisa BBM",
+                   valueText: "--", unit: "", color: .secondary)
     }
 
     private var ignOnCountMetric: MetricValue {
@@ -369,10 +403,10 @@ struct ContentView: View {
     private func metric(_ key: String, icon: String, title: String,
                         decimals: Int, color: Color = .white) -> MetricValue {
         guard let d = store.snapshot.decoded(key) else {
-            return MetricValue(icon: icon, title: title, valueText: "--",
+            return MetricValue(key: key, icon: icon, title: title, valueText: "--",
                                unit: "", color: .secondary)
         }
-        return MetricValue(icon: icon, title: title,
+        return MetricValue(key: key, icon: icon, title: title,
                            valueText: String(format: "%.\(decimals)f", d.value),
                            unit: d.unit, color: color)
     }
@@ -404,8 +438,7 @@ struct ContentView: View {
                                 .font(.caption)
                             Text(d.displayName)
                                 .font(.caption.monospaced())
-                                .lineLimit(1)
-                                .truncationMode(.middle)
+                                .lineLimit(2)
                                 .foregroundStyle(.white)
                             Spacer()
                             Text(d.isMatch ? "✓ CCU" : "")
@@ -438,17 +471,33 @@ struct ContentView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.white)
                 Spacer()
+                Button {
+                    #if canImport(UIKit)
+                    UIPasteboard.general.string = store.authTrace.enumerated()
+                        .map { "\($0.offset + 1). \($0.element)" }
+                        .joined(separator: "\n")
+                    #endif
+                    showAuthCopiedToast = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+                        showAuthCopiedToast = false
+                    }
+                } label: {
+                    Label(showAuthCopiedToast ? "Tersalin!" : "Salin", systemImage: "doc.on.doc")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(accent)
+                }
+                .buttonStyle(.plain)
             }
             ForEach(store.authTrace.indices, id: \.self) { i in
-                HStack(spacing: 6) {
+                HStack(alignment: .top, spacing: 6) {
                     Text("\(i + 1)")
                         .font(.caption2.monospaced())
                         .foregroundStyle(.secondary)
                     Text(store.authTrace[i])
                         .font(.caption2.monospaced())
-                        .lineLimit(2)
-                        .truncationMode(.middle)
+                        .fixedSize(horizontal: false, vertical: true)
                         .foregroundStyle(.white)
+                        .textSelection(.enabled)
                     Spacer(minLength: 0)
                 }
                 .padding(.vertical, 3)
@@ -464,10 +513,10 @@ struct ContentView: View {
     /// Keep-alive 0xA6: app resmi Yamaha mengirim frame ini tiap 1 detik selama
     /// sesi hidup; sebelumnya app ini diam total setelah auth — kemungkinan
     /// besar itu penyebab "connect sukses tapi timeout beberapa detik kemudian".
-    /// Default "Notifikasi saja" nol efek samping ke motor.
+    /// Default "Penuh" — hasil uji lapangan paling stabil (lihat TelemetryStore).
     private var keepAlivePicker: some View {
         let policy = Binding<KeepAlivePolicy>(
-            get: { KeepAlivePolicy(rawValue: keepAlivePolicyRaw) ?? .notifyOnly },
+            get: { KeepAlivePolicy(rawValue: keepAlivePolicyRaw) ?? .full },
             set: { keepAlivePolicyRaw = $0.rawValue }
         )
         return VStack(spacing: 6) {
@@ -491,113 +540,46 @@ struct ContentView: View {
         switch policy {
         case .off: return "Tidak kirim apa-apa setelah auth (perilaku lama)."
         case .notifyOnly: return "Kirim frame \"tidak ada notifikasi\" tiap detik — nol efek samping ke motor."
-        case .full: return "Sama seperti app resmi — juga ikut men-set jam di dashboard motor."
+        case .full: return "Sama seperti app resmi — juga ikut men-set jam di dashboard motor. Paling stabil pada uji lapangan."
         }
     }
 
+    /// Dibungkus ScrollView: panel "Tahap auth" bisa berisi puluhan baris
+    /// (retry berulang menumpuk dalam satu sesi idle) — tanpa scroll, konten
+    /// mendorong header ("TelAerox" + status bar) keluar layar sepenuhnya.
     private var idleView: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "bicycle")
-                .font(.system(size: 56))
-                .foregroundStyle(accent.opacity(0.7))
-            Text("Belum terhubung")
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(.white)
-            Text("Nyalakan mesin / kontak Aerox, lalu tekan Hubungkan.\nAplikasi menampilkan telemetri langsung dari CCU via Bluetooth.")
-                .font(.subheadline)
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 32)
+        ScrollView {
+            VStack(spacing: 14) {
+                Image(systemName: "bicycle")
+                    .font(.system(size: 56))
+                    .foregroundStyle(accent.opacity(0.7))
+                Text("Belum terhubung")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.white)
+                Text("Nyalakan mesin / kontak Aerox, lalu tekan Hubungkan.\nAplikasi menampilkan telemetri langsung dari CCU via Bluetooth.")
+                    .font(.subheadline)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 32)
 
-            keepAlivePicker
+                keepAlivePicker
 
-            if store.state == .scanning {
-                discoveryDebugList
+                if store.state == .scanning {
+                    discoveryDebugList
+                }
+                // Auth trace: muncul pas idle (connecting → authenticating → failed/
+                // terputus). Jadi kalau pas di motor "berhasil connect tapi timeout
+                // beberapa detik kemudian", di sini kelihatan auth-nya nyangkut di
+                // langkah mana (kirim 0xAA bonded=? → terima/tidak 0x5A → fallback
+                // bonding → watchdog timeout) — bukan tebak-tebakan lagi.
+                if !store.authTrace.isEmpty {
+                    authTraceDebugList
+                }
             }
-            // Auth trace: muncul pas idle (connecting → authenticating → failed/
-            // terputus). Jadi kalau pas di motor "berhasil connect tapi timeout
-            // beberapa detik kemudian", di sini kelihatan auth-nya nyangkut di
-            // langkah mana (kirim 0xAA bonded=? → terima/tidak 0x5A → fallback
-            // bonding → watchdog timeout) — bukan tebak-tebakan lagi.
-            if !store.authTrace.isEmpty {
-                authTraceDebugList
-            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 24)
+            .padding(.bottom, 40)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.bottom, 40)
-    }
-
-    // MARK: - Log diagnostik
-
-    /// Isi lengkap: semua frame TX/RX mentah (hex, kredensial disensor) +
-    /// narasi tahap koneksi, dari sejak app dibuka — bukan cuma sesi terakhir.
-    /// Ini yang dibagikan kalau connect "berhasil tapi timeout" biar bisa
-    /// dianalisa persis nyangkut di byte/detik yang mana.
-    private var logSheet: some View {
-        NavigationStack {
-            VStack(spacing: 20) {
-                VStack(spacing: 6) {
-                    Image(systemName: "doc.text.magnifyingglass")
-                        .font(.system(size: 40))
-                        .foregroundStyle(accent)
-                    Text("\(store.logLineCount) baris terkumpul")
-                        .font(.headline)
-                        .foregroundStyle(.white)
-                    Text("Rekaman semua frame BLE (TX/RX mentah) + tahap koneksi sejak app dibuka. Kredensial (ccuid/passKey/phoneUUID) dan VIN otomatis disensor — aman dibagikan/dikirim buat dianalisa.")
-                        .font(.caption)
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 24)
-                }
-                .padding(.top, 12)
-
-                VStack(spacing: 10) {
-                    Button {
-                        #if canImport(UIKit)
-                        UIPasteboard.general.string = store.logText()
-                        #endif
-                        showCopiedToast = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
-                            showCopiedToast = false
-                        }
-                    } label: {
-                        Label(showCopiedToast ? "Tersalin!" : "Salin Log", systemImage: "doc.on.doc")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(accent)
-
-                    Button {
-                        logSnapshotForExport = store.logText()
-                        showLogExporter = true
-                    } label: {
-                        Label("Simpan sebagai File…", systemImage: "square.and.arrow.down")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button(role: .destructive) {
-                        store.clearLog()
-                    } label: {
-                        Label("Hapus Log", systemImage: "trash")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(store.logLineCount == 0)
-                }
-                .padding(.horizontal, 24)
-
-                Spacer()
-            }
-            .navigationTitle("Log Diagnostik")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Tutup") { showLogSheet = false }
-                }
-            }
-        }
-        .preferredColorScheme(.dark)
     }
 
     // MARK: - Helpers
@@ -628,8 +610,302 @@ struct ContentView: View {
     }
 }
 
+/// Sheet "Log Diagnostik" — diekstrak jadi View sendiri (bukan computed
+/// property di ContentView) supaya `.fileExporter` menempel pada hierarki DI
+/// DALAM sheet, bukan di root ZStack milik ContentView. Sebelumnya
+/// `.fileExporter` dipasang di root sementara dipicu dari dalam sheet — UIKit
+/// menolak mem-present modal kedua di atas sheet yang sudah aktif, dan
+/// kegagalannya senyap total (completion handler membuang `Result`).
+struct LogSheetView: View {
+    @ObservedObject var store: TelemetryStore
+    @ObservedObject var recorder: SessionRecorder
+    let accent: Color
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var recordFormat: SessionRecorder.Format = .bleRaw
+
+    // Binding lokal ke key yang sama dengan TelemetryStore.diagLogEnabled —
+    // pola ini sudah dipakai buat keepAlivePolicy (lihat ContentView.keepAlivePicker):
+    // @AppStorage sendiri yang memicu re-render View saat berubah, sedangkan
+    // TelemetryStore membaca key yang sama buat gating logika internal.
+    // Binding lewat $store.diagLogEnabled TIDAK dipakai karena properti itu
+    // bukan @Published — perubahannya tidak akan memicu objectWillChange.
+    @AppStorage("diagLogEnabled") private var diagLogEnabled: Bool = false
+
+    @State private var showLogExporter = false
+    @State private var showCopiedToast = false
+    // Di-set SEKALI saat tombol ditekan, bukan dibaca ulang tiap body
+    // dievaluasi (snapshot telemetri berubah ~20 Hz saat streaming — building
+    // ulang string log yang bisa ribuan baris tiap frame itu boros).
+    @State private var logSnapshotForExport = ""
+    @State private var exportFilename = ""
+    @State private var exportResultMessage: String?
+    @State private var exportResultIsError = false
+    // File temp buat ShareLink — dibuat sekali per tap "Bagikan", dibaca dari
+    // App Sandbox tmp/ (bukan Documents) karena isinya sekali-pakai.
+    @State private var shareURL: URL?
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 20) {
+                VStack(spacing: 6) {
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.system(size: 40))
+                        .foregroundStyle(accent)
+                    Text("\(store.logLineCount) baris terkumpul")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                    Text("Rekaman semua frame BLE (TX/RX mentah) + tahap koneksi sejak app dibuka. Kredensial (ccuid/passKey/phoneUUID) dan VIN otomatis disensor — aman dibagikan/dikirim buat dianalisa.")
+                        .font(.caption)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 24)
+                }
+                .padding(.top, 12)
+
+                Toggle(isOn: $store.diagLogEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Aktifkan Log Diagnostik")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.white)
+                        Text("Mati secara default. Saat aktif, semua frame BLE mentah + tahap koneksi disimpan ke buffer ini sampai dihapus atau app ditutup.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .tint(accent)
+                .padding(.horizontal, 24)
+
+                recordingSection
+                    .padding(.horizontal, 24)
+
+                Divider()
+                    .overlay(Color.white.opacity(0.1))
+                    .padding(.horizontal, 24)
+
+                VStack(spacing: 10) {
+                    Button {
+                        #if canImport(UIKit)
+                        UIPasteboard.general.string = store.logText()
+                        #endif
+                        showCopiedToast = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+                            showCopiedToast = false
+                        }
+                    } label: {
+                        Label(showCopiedToast ? "Tersalin!" : "Salin Log", systemImage: "doc.on.doc")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(accent)
+
+                    Button {
+                        prepareShareFile()
+                    } label: {
+                        Label("Bagikan Log…", systemImage: "square.and.arrow.up")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button {
+                        logSnapshotForExport = store.logText()
+                        exportFilename = Self.makeLogFileName()
+                        showLogExporter = true
+                    } label: {
+                        Label("Simpan sebagai File…", systemImage: "square.and.arrow.down")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button(role: .destructive) {
+                        store.clearLog()
+                    } label: {
+                        Label("Hapus Log", systemImage: "trash")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(store.logLineCount == 0)
+
+                    if let message = exportResultMessage {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(exportResultIsError ? .red : .green)
+                            .multilineTextAlignment(.center)
+                    }
+                }
+                .padding(.horizontal, 24)
+
+                Spacer()
+            }
+            .navigationTitle("Log Diagnostik")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Tutup") { dismiss() }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .fileExporter(isPresented: $showLogExporter,
+                      document: LogDocument(text: logSnapshotForExport),
+                      contentType: .plainText,
+                      defaultFilename: exportFilename) { result in
+            switch result {
+            case .success(let url):
+                showExportResult("Tersimpan: \(url.lastPathComponent)", isError: false)
+            case .failure(let error):
+                // NSUserCancelledError (batal dari document picker) bukan
+                // kegagalan sungguhan — jangan tampilkan sebagai error.
+                let nsError = error as NSError
+                if nsError.domain == NSCocoaErrorDomain && nsError.code == NSUserCancelledError {
+                    return
+                }
+                showExportResult("Gagal menyimpan: \(error.localizedDescription)", isError: true)
+            }
+        }
+        .sheet(item: Binding(get: { shareURL.map(ShareItem.init) },
+                              set: { shareURL = $0?.url })) { item in
+            ActivityShareSheet(activityItems: [item.url])
+        }
+    }
+
+    /// Rekaman sesi ke FILE (bukan buffer memori) — beda dari toggle "Log
+    /// Diagnostik" di atas: dua format (BLE Raw / CSV per detik), ditulis
+    /// langsung ke disk (aman buat sesi panjang termasuk di background), dan
+    /// otomatis berhenti kalau kena limit ukuran/durasi (lihat SessionRecorder).
+    private var recordingSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Rekaman Sesi")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+
+            if recorder.isRecording {
+                TimelineView(.periodic(from: recorder.startedAt ?? .now, by: 1)) { context in
+                    let elapsed = Int(context.date.timeIntervalSince(recorder.startedAt ?? context.date))
+                    HStack {
+                        Circle().fill(.red).frame(width: 8, height: 8)
+                        Text("Merekam \(recorder.format.rawValue) — \(elapsed / 60)m \(elapsed % 60)d — \(formattedSize(recorder.bytesWritten))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                }
+                Button(role: .destructive) {
+                    recorder.stop()
+                } label: {
+                    Label("Stop Rekam", systemImage: "stop.circle.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            } else {
+                Picker("Format", selection: $recordFormat) {
+                    ForEach(SessionRecorder.Format.allCases) { f in
+                        Text(f.rawValue).tag(f)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text("BLE Raw: semua frame TX/RX mentah (kredensial/VIN disensor). CSV: satu baris per detik, nilai terdecode + header. Otomatis berhenti di 20 MB atau 6 jam. Tetap berjalan kalau app diminimize (background BLE) selama sesi masih terhubung.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    _ = recorder.start(format: recordFormat)
+                } label: {
+                    Label("Mulai Rekam", systemImage: "record.circle")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
+
+                if let url = recorder.fileURL {
+                    if let reason = recorder.stopReason {
+                        Text(reason)
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+                    HStack {
+                        Text(url.lastPathComponent)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Button {
+                            shareURL = url
+                        } label: {
+                            Label("Bagikan", systemImage: "square.and.arrow.up")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(accent)
+                    }
+                }
+            }
+        }
+    }
+
+    private func formattedSize(_ bytes: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
+
+    /// "telaerox-log_2026-09-22_20-14-05" — cukup unik + gampang dibaca kalau
+    /// beberapa kali export dalam satu sesi ujicoba di motor.
+    private static func makeLogFileName() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        return "telaerox-log_\(f.string(from: Date()))"
+    }
+
+    private func showExportResult(_ message: String, isError: Bool) {
+        exportResultMessage = message
+        exportResultIsError = isError
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+            if exportResultMessage == message { exportResultMessage = nil }
+        }
+    }
+
+    /// Tulis snapshot log ke file temp lalu tampilkan share sheet — jalur ini
+    /// tidak lewat document picker sama sekali, jadi tidak kena masalah
+    /// "modal ganda" yang bikin fileExporter gagal diam.
+    private func prepareShareFile() {
+        let text = store.logText()
+        let name = Self.makeLogFileName() + ".txt"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        do {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+            shareURL = url
+        } catch {
+            showExportResult("Gagal menyiapkan berkas: \(error.localizedDescription)", isError: true)
+        }
+    }
+}
+
+/// Wrapper `Identifiable` supaya `URL` (yang bukan Identifiable) bisa dipakai
+/// dengan `.sheet(item:)`.
+private struct ShareItem: Identifiable {
+    let url: URL
+    var id: URL { url }
+}
+
+#if canImport(UIKit)
+/// Bungkus tipis `UIActivityViewController` — SwiftUI `ShareLink` tidak
+/// menyediakan cara mendeteksi kapan share sheet ditutup dari sisi kita, jadi
+/// pakai UIKit langsung supaya presentasinya konsisten dengan `.sheet(item:)`
+/// yang sudah dipakai di tempat lain pada view ini.
+struct ActivityShareSheet: UIViewControllerRepresentable {
+    let activityItems: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+#endif
+
 /// Dokumen plain-text buat `.fileExporter` — dipakai tombol "Simpan sebagai
-/// File…" di logSheet. Cukup write-only (init(configuration:) tidak akan
+/// File…" di LogSheetView. Cukup write-only (init(configuration:) tidak akan
 /// pernah dipakai karena app ini tidak menawarkan buka-log-lama), tapi
 /// FileDocument mewajibkan itu ada.
 struct LogDocument: FileDocument {
@@ -653,6 +929,9 @@ struct LogDocument: FileDocument {
 
 struct MetricValue: Identifiable {
     let id = UUID()
+    /// Kunci ke `SensorCatalog` (biasanya sama dengan `MappingItem.key`) — kalau
+    /// nil, kartu tidak bisa di-tap (dipakai buat kartu tanpa entri katalog).
+    let key: String?
     let icon: String
     let title: String
     let valueText: String

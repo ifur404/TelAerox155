@@ -50,13 +50,41 @@ Dari capture `Aerox-155.pklg`, frame `0x5B` (info kendaraan):
 
 | ID | raw | Sample mapping | Nilai |
 |---|---|---|---|
-| `{f1 a1}` | `00 54 07 d4` | `ECU総通電時間` (ECU total power-on time), UI32, unit `sec` | `0x005407D4` = 5.509.588 detik ≈ **63,8 hari** total ECU menyala seumur hidup |
+| `{f1 a1}` | `00 54 07 d4` | `ECU総通電時間` (ECU total power-on time), UI32, unit `sec` | `0x005407D4` = 5.507.028 detik ≈ **63,7 hari** total ECU menyala seumur hidup |
 | `{f1 a2}` | `1c 0c` | `IGN ON総回数` (total hitungan IGN ON), UI16, unit `回`(kali) | `0x1C0C` = **7.180 kali** kunci kontak ON |
 
-Kredibilitas: **SEDANG** — struktur/lokasi field cocok 100% dengan skema
-`ByteNo` absolut (§2), tapi nilai FactorTop/Offset di sample belum
-divalidasi silang ke data lapangan lain (beda dari kasus RPM/odometer yang
-sudah dicek dua sumber independen).
+### Validasi silang lapangan (dua log BLE nyata, bukan cuma satu capture)
+
+Selain `Aerox-155.pklg`, dua sesi log diagnostik nyata dari app ini
+(`docs/research/device-log-ble/1.txt` dan `2.txt`, di-export berurutan pada
+motor yang sama) memberi titik data kedua dan ketiga untuk kedua field ini:
+
+| Sumber | header "Dibuat" | `{f1 a1}` raw | detik | hari | `{f1 a2}` raw | IGN ON |
+|---|---|---|---|---|---|---|
+| `Aerox-155.pklg` | (capture lama, terpisah) | `00 54 07 D4` | 5.507.028 | 63,74 | `1C 0C` | 7.180 |
+| `1.txt` | 2026-09-22T14:33:00Z | `00 54 24 09` | 5.514.249 | 63,82 | `1C 1F` | 7.199 |
+| `2.txt` | 2026-09-22T14:38:32Z | `00 54 25 50` | 5.514.576 | 63,83 | `1C 20` | 7.200 |
+
+Metode validasi:
+
+- **`ecuPowerOnTime`** (faktor 1, offset 0, unit detik): selisih nilai raw
+  antara `1.txt` dan `2.txt` adalah `5.514.576 − 5.514.249 = 327` detik.
+  Selisih wall-clock antar dua header "Dibuat" adalah `14:38:32 − 14:33:00 =
+  332` detik. Keduanya cocok dalam ~1,5% — counter di motor naik sesuai laju
+  waktu nyata persis seperti prediksi faktor=1/offset=0, dan bedanya
+  (5 detik) wajar karena sampel `{f1 a1}` diambil beberapa detik sebelum
+  masing-masing log di-export, bukan tepat di momen "Dibuat". Ini adalah
+  cross-check independen kedua (setelah struktur `ByteNo`) yang tidak
+  bergantung pada `Sample_SCCU1_MappingFile.json`.
+- **`ignOnCount`** (faktor 1, offset 0, unit kali): naik tepat **+1** dari
+  `1.txt` ke `2.txt` (7.199 → 7.200) — konsisten dengan satu siklus kontak
+  motor OFF→ON di antara dua sesi ujicoba tersebut (`1.txt` dan `2.txt` adalah
+  dua percobaan connect terpisah pada motor yang sama).
+
+Kredibilitas: **TINGGI** — struktur/lokasi field cocok 100% dengan skema
+`ByteNo` absolut (§2), dan kini FactorTop/Offset juga tervalidasi silang ke
+sumber independen kedua (dua log lapangan) selain `Aerox-155.pklg`, sejajar
+dengan kasus RPM/odometer.
 
 ## 4. Frame `0x56` (CAN/status) — 2 dari 5 record kini punya nama, 3 masih kosong
 

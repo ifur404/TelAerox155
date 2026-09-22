@@ -7,6 +7,7 @@ TelAerox155/secrets.local.json
 *.apk
 jadx-out/
 jadx-gui*/
+device-log-ble/
 
 # Xcode
 xcuserdata/
