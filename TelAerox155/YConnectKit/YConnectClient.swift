@@ -59,11 +59,13 @@ public protocol YConnectClientDelegate: AnyObject {
     func client(_ client: YConnectClient, didChangeState state: ClientState)
     func client(_ client: YConnectClient, didUpdate snapshot: TelemetrySnapshot)
     func client(_ client: YConnectClient, didReceiveVIN vin: String)
+    func client(_ client: YConnectClient, didReceiveModelCode modelCode: String)
     func client(_ client: YConnectClient, didFailWith error: Error)
 }
 
 public extension YConnectClientDelegate {
     func client(_ client: YConnectClient, didReceiveVIN vin: String) {}
+    func client(_ client: YConnectClient, didReceiveModelCode modelCode: String) {}
 }
 
 /// Client BLE read-only untuk Y-Connect / SCCU1.
@@ -369,9 +371,15 @@ public final class YConnectClient: NSObject {
         // tepat 2 byte sebelum akhir frame. Checksum saja tidak menjamin ini.
         guard (try? frame.validateStructure()) != nil else { return }
 
-        // VIN dari frame 0x5B record {f1,90}
-        if type == .common, let vin = extractVIN(frame) {
-            delegate?.client(self, didReceiveVIN: vin)
+        // VIN dari frame 0x5B record {f1,90}; kode model dari {f1,97} (mis. "BBP2").
+        // Keduanya ASCII, jadi diekstrak terpisah dari pipeline numerik Mapping/TelemetryDecoder.
+        if type == .common {
+            if let vin = extractASCII(frame, localID: (0xF1, 0x90)) {
+                delegate?.client(self, didReceiveVIN: vin)
+            }
+            if let model = extractASCII(frame, localID: (0xF1, 0x97)) {
+                delegate?.client(self, didReceiveModelCode: model)
+            }
         }
 
         do {
@@ -391,11 +399,12 @@ public final class YConnectClient: NSObject {
         }
     }
 
-    private func extractVIN(_ frame: Frame) -> String? {
+    private func extractASCII(_ frame: Frame, localID: (UInt8, UInt8)) -> String? {
         guard let recs = try? frame.records() else { return nil }
-        for r in recs where r.localID == (0xF1, 0x90) {
+        for r in recs where r.localID == localID {
             let slice = Array(frame.bytes[r.dataStart..<(r.dataStart + r.length)])
-            return String(bytes: slice, encoding: .ascii)
+            return String(bytes: slice, encoding: .ascii)?
+                .trimmingCharacters(in: .controlCharacters)
         }
         return nil
     }

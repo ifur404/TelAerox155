@@ -84,6 +84,11 @@ struct ContentView: View {
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)
                 Spacer()
+                if let model = store.modelCode {
+                    Text(model)
+                        .font(.caption2.weight(.semibold).monospaced())
+                        .foregroundStyle(.secondary)
+                }
                 if let vin = store.vin {
                     Text("VIN \(vin)")
                         .font(.caption2.monospaced())
@@ -166,9 +171,13 @@ struct ContentView: View {
                     metricCard(baroMetric)
                     metricCard(fiMetric)
                     metricCard(dtcMetric)
+                    metricCard(fiLampMetric)
+                    metricCard(injectionMetric)
                 }
 
                 metricCard(odometerMetric)
+
+                extraInfoSection
             }
             .padding(.horizontal)
             .padding(.bottom, 24)
@@ -309,6 +318,52 @@ struct ContentView: View {
 
     private var odometerMetric: MetricValue {
         metric("odometer", icon: "road.lanes", title: "Jarak Tempuh", decimals: 1)
+    }
+
+    private var fiLampMetric: MetricValue {
+        guard let n = store.snapshot.value("fiWarningLamp") else {
+            return metric("fiWarningLamp", icon: "lightbulb", title: "Lampu FI", decimals: 0)
+        }
+        let color: Color = n > 0 ? .red : .green
+        return metric("fiWarningLamp", icon: n > 0 ? "lightbulb.fill" : "lightbulb",
+                      title: "Lampu FI", decimals: 0, color: color)
+    }
+
+    private var injectionMetric: MetricValue {
+        metric("injection", icon: "drop.fill", title: "Jumlah Injeksi", decimals: 2)
+    }
+
+    /// Field frame 0x5B (`ecuPowerOnTime`, `ignOnCount`) kredibilitasnya SEDANG:
+    /// struktur ByteNo sudah tervalidasi ke capture nyata tapi faktor/offset
+    /// belum dicross-check ke sumber independen kedua (beda dari RPM/odometer
+    /// yang sudah). Lihat docs/research/02-mapping-reanalysis.md §3.
+    private var extraInfoSection: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Text("Info Tambahan (belum tervalidasi penuh)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                Spacer()
+            }
+            HStack(spacing: 14) {
+                metricCard(ecuPowerOnMetric, corner: 18)
+                metricCard(ignOnCountMetric, corner: 18)
+            }
+        }
+    }
+
+    private var ecuPowerOnMetric: MetricValue {
+        guard let d = store.snapshot.decoded("ecuPowerOnTime") else {
+            return MetricValue(icon: "power", title: "ECU Total Nyala",
+                               valueText: "--", unit: "", color: .secondary)
+        }
+        let hari = d.value / 86_400
+        return MetricValue(icon: "power", title: "ECU Total Nyala",
+                           valueText: String(format: "%.1f", hari), unit: "hari", color: .white)
+    }
+
+    private var ignOnCountMetric: MetricValue {
+        metric("ignOnCount", icon: "key.fill", title: "Total IGN ON", decimals: 0)
     }
 
     private func metric(_ key: String, icon: String, title: String,

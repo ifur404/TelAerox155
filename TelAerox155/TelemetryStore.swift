@@ -38,6 +38,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     @Published var state: ClientState = .poweredOff
     @Published var snapshot = TelemetrySnapshot()
     @Published var vin: String?
+    @Published var modelCode: String?
     @Published var errorMessage: String?
 
     /// Kumpulan yang barusan kebaca, flat buat SwiftUI. Resize paling akhir aja.
@@ -171,6 +172,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         state = .poweredOff
         snapshot = TelemetrySnapshot()
         vin = nil
+        modelCode = nil
         setIdleTimerDisabled(false)
         diagLog.log(.info, "=== disconnect() dipanggil user ===")
         refreshLogCount()
@@ -228,6 +230,10 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
 
     func client(_ client: YConnectClient, didReceiveVIN vin: String) {
         self.vin = vin
+    }
+
+    func client(_ client: YConnectClient, didReceiveModelCode modelCode: String) {
+        self.modelCode = modelCode
     }
 
     func client(_ client: YConnectClient, didFailWith error: Error) {

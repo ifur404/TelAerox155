@@ -81,5 +81,18 @@ nonisolated public extension Mapping {
         MappingItem(key: "dtc",      name: "Kode DTC",           frameType: 0x55, byteNo: 29, format: .ui16),
         // Frame 0x55 — record {00,48}
         MappingItem(key: "odometer", name: "Jarak Tempuh",       frameType: 0x55, byteNo: 41, format: .ui32, factorTop: 1, factorBottom: 10, unit: "km"),
+
+        // Frame 0x56 — status CAN. Hanya 2 dari 5 record yang punya definisi di
+        // Sample_SCCU1_MappingFile.json (0x020A, 0x0216, 0x0245 tidak terdaftar
+        // sama sekali — lihat docs/research/02-mapping-reanalysis.md §4).
+        MappingItem(key: "fiWarningLamp", name: "Lampu FI",       frameType: 0x56, byteNo: 18, format: .ui8),
+        MappingItem(key: "injection",     name: "Jumlah Injeksi", frameType: 0x56, byteNo: 22, format: .ui16, factorTop: 1, factorBottom: 100, unit: "cc"),
+
+        // Frame 0x5B — info kendaraan (record {f1,a1}/{f1,a2}). Kredibilitas
+        // SEDANG: struktur match skema ByteNo absolut (terverifikasi di §2),
+        // tapi faktor/offset belum dicross-check ke sumber independen kedua
+        // seperti RPM/odometer. Lihat docs/research/02-mapping-reanalysis.md §3.
+        MappingItem(key: "ecuPowerOnTime", name: "ECU Total Nyala", frameType: 0x5B, byteNo: 39, format: .ui32, unit: "detik"),
+        MappingItem(key: "ignOnCount",     name: "Total IGN ON",    frameType: 0x5B, byteNo: 46, format: .ui16, unit: "kali"),
     ])
 }
