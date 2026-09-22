@@ -45,7 +45,7 @@ struct ContentView: View {
             Text(store.errorMessage ?? "Terjadi kesalahan")
         }
         .sheet(isPresented: $showLogSheet) {
-            LogSheetView(store: store, recorder: store.recorder, accent: accent)
+            LogSheetView(store: store, recorder: store.recorder, location: store.location, accent: accent)
         }
         .sheet(item: Binding(
             get: { selectedSensorKey.map(SensorSheetItem.init) },
@@ -619,6 +619,7 @@ struct ContentView: View {
 struct LogSheetView: View {
     @ObservedObject var store: TelemetryStore
     @ObservedObject var recorder: SessionRecorder
+    @ObservedObject var location: LocationProvider
     let accent: Color
     @Environment(\.dismiss) private var dismiss
 
@@ -790,6 +791,9 @@ struct LogSheetView: View {
                         Spacer()
                     }
                 }
+                if recorder.format == .csv {
+                    gpsStatusRow
+                }
                 Button(role: .destructive) {
                     recorder.stop()
                 } label: {
@@ -805,9 +809,13 @@ struct LogSheetView: View {
                 }
                 .pickerStyle(.segmented)
 
-                Text("BLE Raw: semua frame TX/RX mentah (kredensial/VIN disensor). CSV: satu baris per detik, nilai terdecode + header. Otomatis berhenti di 20 MB atau 6 jam. Tetap berjalan kalau app diminimize (background BLE) selama sesi masih terhubung.")
+                Text("BLE Raw: semua frame TX/RX mentah (kredensial/VIN disensor). CSV: satu baris per detik, nilai terdecode + header (termasuk GPS). Otomatis berhenti di 20 MB atau 6 jam. Tetap berjalan kalau app diminimize (background BLE) selama sesi masih terhubung.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+
+                if recordFormat == .csv {
+                    gpsStatusRow
+                }
 
                 Button {
                     _ = recorder.start(format: recordFormat)
@@ -847,6 +855,61 @@ struct LogSheetView: View {
 
     private func formattedSize(_ bytes: Int) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
+
+    /// Status GPS buat kolom gps_* di CSV — GPS baru benar-benar nyala saat
+    /// rekaman CSV berjalan (lihat TelemetryStore.startLogCountTimer), jadi
+    /// baris ini juga jadi indikator "kenapa kolom gps_* di CSV kosong" kalau
+    /// izin belum diberikan atau belum ada fix.
+    private var gpsStatusRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "location.fill")
+                .font(.caption2)
+                .foregroundStyle(gpsColor)
+            Text(gpsStatusText)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Spacer()
+            if location.authorizationStatus == .denied || location.authorizationStatus == .restricted {
+                Button("Buka Pengaturan") {
+                    #if canImport(UIKit)
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                    #endif
+                }
+                .font(.caption2)
+                .foregroundStyle(accent)
+            }
+        }
+    }
+
+    private var gpsColor: Color {
+        switch location.authorizationStatus {
+        case .authorizedAlways, .authorizedWhenInUse:
+            return location.lastLocation != nil ? .green : .orange
+        case .denied, .restricted:
+            return .red
+        case .notDetermined:
+            return .secondary
+        @unknown default:
+            return .secondary
+        }
+    }
+
+    private var gpsStatusText: String {
+        switch location.authorizationStatus {
+        case .denied, .restricted:
+            return "Izin lokasi ditolak — kolom gps_* akan kosong."
+        case .notDetermined:
+            return "Izin lokasi akan diminta saat rekaman dimulai."
+        case .authorizedWhenInUse:
+            return "Izin lokasi \"Saat Digunakan\" saja — GPS berhenti kalau app di-background. Pilih \"Selalu\" di Pengaturan buat rekaman background."
+        case .authorizedAlways:
+            return location.lastLocation != nil ? "GPS aktif, ada fix." : "GPS aktif, menunggu fix pertama…"
+        @unknown default:
+            return ""
+        }
     }
 
     /// "telaerox-log_2026-09-22_20-14-05" — cukup unik + gampang dibaca kalau

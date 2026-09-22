@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import CoreLocation
 
 /// Rekaman sesi ke FILE (bukan buffer memori seperti `DiagnosticLog`) — dua format:
 ///
@@ -45,7 +46,7 @@ final class SessionRecorder: ObservableObject {
     private let maxBytes = 20 * 1024 * 1024      // 20 MB
     private let maxDuration: TimeInterval = 6 * 3600   // 6 jam
 
-    private static let csvHeader = "timestamp_iso,elapsed_s,rpm,speed_kmh,battery_v,coolant_c,intake_c,throttle_deg,baro_kpa,fiError,dtc,fiWarningLamp,injection_cc,odometer_km,ecuPowerOnTime_s,ignOnCount,vin,modelCode"
+    private static let csvHeader = "timestamp_iso,elapsed_s,rpm,speed_kmh,battery_v,coolant_c,intake_c,throttle_deg,baro_kpa,fiError,dtc,fiWarningLamp,injection_cc,odometer_km,ecuPowerOnTime_s,ignOnCount,vin,modelCode,gps_lat,gps_lon,gps_speed_kmh,gps_alt_m,gps_accuracy_m"
 
     /// "telaerox-rec_2026-09-22_20-14-05.csv" / ".txt" — cukup unik + gampang
     /// dibaca kalau beberapa kali rekam dalam satu sesi ujicoba di motor.
@@ -125,21 +126,34 @@ final class SessionRecorder: ObservableObject {
     // MARK: - CSV
 
     /// Dipanggil dari timer 1 Hz yang sama dengan yang me-refresh `logLineCount`
-    /// — satu baris per detik, nilai TERDECODE (bukan raw byte).
-    func appendCSVRow(snapshot: TelemetrySnapshot, vin: String?, modelCode: String?) {
+    /// — satu baris per detik, nilai TERDECODE (bukan raw byte). `location`
+    /// nil kalau GPS belum ada fix (mis. baru start, indoor, atau izin belum
+    /// diberikan) — kolom gps_* dikosongkan di baris itu, bukan menghentikan
+    /// rekaman.
+    func appendCSVRow(snapshot: TelemetrySnapshot, vin: String?, modelCode: String?,
+                       location: CLLocation?) {
         guard isRecording, format == .csv, let started = startedAt else { return }
         let elapsed = Date().timeIntervalSince(started)
         func v(_ key: String) -> String {
             guard let d = snapshot.decoded(key) else { return "" }
             return String(format: "%.3f", d.value)
         }
+        // GPS: speed/course CoreLocation bernilai negatif kalau tidak valid —
+        // dikosongkan (bukan ditulis -1) supaya tidak salah dibaca sebagai
+        // kecepatan mundur di CSV.
+        let lat = location.map { String(format: "%.6f", $0.coordinate.latitude) } ?? ""
+        let lon = location.map { String(format: "%.6f", $0.coordinate.longitude) } ?? ""
+        let gpsSpeed = location.flatMap { $0.speed >= 0 ? String(format: "%.1f", $0.speed * 3.6) : nil } ?? ""
+        let gpsAlt = location.map { String(format: "%.1f", $0.altitude) } ?? ""
+        let gpsAcc = location.flatMap { $0.horizontalAccuracy >= 0 ? String(format: "%.1f", $0.horizontalAccuracy) : nil } ?? ""
         let row = [
             ISO8601DateFormatter().string(from: Date()),
             String(format: "%.1f", elapsed),
             v("rpm"), v("speed"), v("battery"), v("coolant"), v("intake"),
             v("throttle"), v("baro"), v("fiError"), v("dtc"), v("fiWarningLamp"),
             v("injection"), v("odometer"), v("ecuPowerOnTime"), v("ignOnCount"),
-            vin ?? "", modelCode ?? ""
+            vin ?? "", modelCode ?? "",
+            lat, lon, gpsSpeed, gpsAlt, gpsAcc
         ].joined(separator: ",")
         write(row + "\n")
     }

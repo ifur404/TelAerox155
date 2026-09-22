@@ -62,6 +62,12 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     /// dinyalakan eksplisit oleh user (start/stop), bukan buffer pasif.
     let recorder = SessionRecorder()
 
+    /// GPS — dipakai kolom gps_* di rekaman CSV. Nyala/mati otomatis mengikuti
+    /// status rekaman CSV (lihat startLogCountTimer), bukan dikontrol
+    /// terpisah oleh user, supaya baterai tidak boros GPS terus-menerus kalau
+    /// tidak sedang merekam.
+    let location = LocationProvider()
+
     /// Jumlah baris log terkumpul, buat ditampilin di UI. Di-refresh 1 Hz
     /// (bukan tiap frame — frame RX bisa ~20 Hz, jangan bikin SwiftUI diff
     /// tiap 50ms) lewat `logCountTimer`.
@@ -203,6 +209,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         }
         refreshLogCount()
         stopLogCountTimer()
+        if location.isActive { location.stop() }
     }
 
     // MARK: - Log diagnostik
@@ -213,11 +220,19 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         // Timer 1 Hz yang sama juga men-sampling satu baris CSV kalau rekaman
         // format CSV sedang aktif (appendCSVRow no-op kalau tidak) — cukup satu
         // timer buat dua keperluan, tidak perlu Timer terpisah 1 Hz lagi.
+        // GPS dinyala/dimatikan mengikuti status rekaman CSV di tick yang sama.
         let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self else { return }
             Task { @MainActor in
                 self.refreshLogCount()
-                self.recorder.appendCSVRow(snapshot: self.snapshot, vin: self.vin, modelCode: self.modelCode)
+                let recordingCSV = self.recorder.isRecording && self.recorder.format == .csv
+                if recordingCSV {
+                    if !self.location.isActive { self.location.start() }
+                    self.recorder.appendCSVRow(snapshot: self.snapshot, vin: self.vin,
+                                               modelCode: self.modelCode, location: self.location.lastLocation)
+                } else if self.location.isActive {
+                    self.location.stop()
+                }
             }
         }
         RunLoop.main.add(t, forMode: .common)
