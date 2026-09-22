@@ -8,7 +8,7 @@ import Foundation
 ///
 /// Formula: `checksum = (256 - (sum(bytes[0..<n-1]) & 0xFF)) & 0xFF`, disimpan di
 /// byte terakhir frame.
-public enum Checksum {
+nonisolated public enum Checksum {
 
     /// Hitung checksum dari deretan byte (tanpa byte checksum itu sendiri).
     public static func compute<S: Sequence>(_ bytes: S) -> UInt8 where S.Element == UInt8 {

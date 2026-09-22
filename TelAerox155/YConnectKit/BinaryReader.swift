@@ -8,7 +8,7 @@ import Foundation
 ///   LE = 408.898.918 km (mustahil).
 /// - Header auth (0xAA byte[2..3]) & panjang L2CAP = little-endian — tapi itu
 ///   ditangani terpisah, bukan lewat pembaca ini.
-enum BinaryReader {
+nonisolated enum BinaryReader {
 
     static func u8(_ b: [UInt8], _ o: Int) -> UInt8? {
         guard o >= 0, o < b.count else { return nil }

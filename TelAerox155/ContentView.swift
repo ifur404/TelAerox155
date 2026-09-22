@@ -1,7 +1,19 @@
 import SwiftUI
+import UniformTypeIdentifiers
+#if canImport(UIKit)
+import UIKit
+#endif
 
 struct ContentView: View {
     @StateObject private var store = TelemetryStore()
+    @AppStorage("keepAlivePolicy") private var keepAlivePolicyRaw: String = KeepAlivePolicy.notifyOnly.rawValue
+    @State private var showLogExporter = false
+    @State private var showCopiedToast = false
+    @State private var showLogSheet = false
+    // Di-set SEKALI saat tombol "Simpan" ditekan, bukan dibaca ulang tiap body
+    // dievaluasi (snapshot telemetri berubah ~20 Hz saat streaming — building
+    // ulang string log yang bisa ribuan baris tiap frame itu boros).
+    @State private var logSnapshotForExport = ""
 
     private let accent = Color(red: 0.20, green: 0.56, blue: 0.95)
 
@@ -31,6 +43,19 @@ struct ContentView: View {
         } message: {
             Text(store.errorMessage ?? "Terjadi kesalahan")
         }
+        .sheet(isPresented: $showLogSheet) { logSheet }
+        .fileExporter(isPresented: $showLogExporter,
+                      document: LogDocument(text: logSnapshotForExport),
+                      contentType: .plainText,
+                      defaultFilename: logFileName) { _ in }
+    }
+
+    /// "log_2026-09-22_20-14-05.txt" — cukup unik + gampang dibaca kalau
+    /// beberapa kali export dalam satu sesi ujicoba di motor.
+    private var logFileName: String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        return "telaerox-log_\(f.string(from: Date()))"
     }
 
     // MARK: - Header
@@ -47,6 +72,7 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                logButton
                 connectButton
             }
 
@@ -69,12 +95,43 @@ struct ContentView: View {
         }
     }
 
+    /// Tombol log diagnostik — selalu ada di header (idle ATAU streaming),
+    /// karena mau lihat log paling sering justru PAS/SEHABIS gagal, bukan cuma
+    /// saat idle. Badge titik oranye muncul kalau ada baris terkumpul.
+    private var logButton: some View {
+        Button { showLogSheet = true } label: {
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .frame(width: 34, height: 34)
+                    .background(Color.white.opacity(0.08), in: Circle())
+                if store.logLineCount > 0 {
+                    Circle().fill(accent).frame(width: 7, height: 7)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Sebelumnya: tombol cuma tahu Hubungkan/Putuskan, dan di-DISABLE selama
+    /// scanning/connecting/authenticating — jadi kalau nyangkut di tengah
+    /// (mis. auth diem sebelum watchdog kepicu) tidak ada cara membatalkan
+    /// selain kill app. Sekarang tombol jadi "Batalkan" di fase itu.
     private var connectButton: some View {
-        Button {
-            store.isActive ? store.disconnect() : store.connect()
+        let label: String
+        let icon: String
+        if store.isActive {
+            label = "Putuskan"; icon = "stop.circle.fill"
+        } else if store.isConnecting {
+            label = "Batalkan"; icon = "xmark.circle.fill"
+        } else {
+            label = "Hubungkan"; icon = "bolt.fill"
+        }
+        return Button {
+            (store.isActive || store.isConnecting) ? store.disconnect() : store.connect()
         } label: {
-            Label(store.isActive ? "Putuskan" : "Hubungkan",
-                  systemImage: store.isActive ? "stop.circle.fill" : "bolt.fill")
+            Label(label, systemImage: icon)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 16)
@@ -87,8 +144,6 @@ struct ContentView: View {
                 )
         }
         .buttonStyle(.plain)
-        .disabled(store.isActive ? false : store.state == .scanning ||
-                  store.state == .connecting || store.state == .authenticating)
     }
 
     // MARK: - Metrics
@@ -227,6 +282,8 @@ struct ContentView: View {
     private var throttleMetric: MetricValue {
         metric("throttle", icon: "gauge.medium", title: "Bukaan Gas", decimals: 0)
     }
+    // Catatan: unit field ini "°" (derajat throttle body), bukan persen —
+    // lihat komentar di Mapping.swift (mapping-overrides.json menyatakan "deg").
 
     private var baroMetric: MetricValue {
         metric("baro", icon: "barometer", title: "Tekanan Udara", decimals: 1)
@@ -315,6 +372,74 @@ struct ContentView: View {
         .padding(.horizontal, 32)
     }
 
+    /// Trace tahap auth (0xAA bonded → balas 0x5A StartProcessing / bonding
+    /// fallback / watchdog timeout). Biar pas di motor keliatan nyangkut di
+    /// langkah mana — bukan cuma "connect sukses tapi beberapa detik kemudian
+    /// timeout" yang misterius.
+    private var authTraceDebugList: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Text("Tahap auth (\(store.authTrace.count))")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                Spacer()
+            }
+            ForEach(store.authTrace.indices, id: \.self) { i in
+                HStack(spacing: 6) {
+                    Text("\(i + 1)")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                    Text(store.authTrace[i])
+                        .font(.caption2.monospaced())
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .foregroundStyle(.white)
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 3)
+                .padding(.horizontal, 8)
+                .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+            }
+        }
+        .padding(10)
+        .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal, 32)
+    }
+
+    /// Keep-alive 0xA6: app resmi Yamaha mengirim frame ini tiap 1 detik selama
+    /// sesi hidup; sebelumnya app ini diam total setelah auth — kemungkinan
+    /// besar itu penyebab "connect sukses tapi timeout beberapa detik kemudian".
+    /// Default "Notifikasi saja" nol efek samping ke motor.
+    private var keepAlivePicker: some View {
+        let policy = Binding<KeepAlivePolicy>(
+            get: { KeepAlivePolicy(rawValue: keepAlivePolicyRaw) ?? .notifyOnly },
+            set: { keepAlivePolicyRaw = $0.rawValue }
+        )
+        return VStack(spacing: 6) {
+            Picker("Keep-alive 0xA6", selection: policy) {
+                Text("Mati").tag(KeepAlivePolicy.off)
+                Text("Notifikasi saja").tag(KeepAlivePolicy.notifyOnly)
+                Text("Penuh").tag(KeepAlivePolicy.full)
+            }
+            .pickerStyle(.segmented)
+            .disabled(store.isActive || store.state == .connecting || store.state == .authenticating)
+
+            Text(keepAlivePolicyHint(policy.wrappedValue))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(.horizontal, 32)
+    }
+
+    private func keepAlivePolicyHint(_ policy: KeepAlivePolicy) -> String {
+        switch policy {
+        case .off: return "Tidak kirim apa-apa setelah auth (perilaku lama)."
+        case .notifyOnly: return "Kirim frame \"tidak ada notifikasi\" tiap detik — nol efek samping ke motor."
+        case .full: return "Sama seperti app resmi — juga ikut men-set jam di dashboard motor."
+        }
+    }
+
     private var idleView: some View {
         VStack(spacing: 14) {
             Image(systemName: "bicycle")
@@ -329,12 +454,95 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 32)
 
+            keepAlivePicker
+
             if store.state == .scanning {
                 discoveryDebugList
+            }
+            // Auth trace: muncul pas idle (connecting → authenticating → failed/
+            // terputus). Jadi kalau pas di motor "berhasil connect tapi timeout
+            // beberapa detik kemudian", di sini kelihatan auth-nya nyangkut di
+            // langkah mana (kirim 0xAA bonded=? → terima/tidak 0x5A → fallback
+            // bonding → watchdog timeout) — bukan tebak-tebakan lagi.
+            if !store.authTrace.isEmpty {
+                authTraceDebugList
             }
         }
         .frame(maxWidth: .infinity)
         .padding(.bottom, 40)
+    }
+
+    // MARK: - Log diagnostik
+
+    /// Isi lengkap: semua frame TX/RX mentah (hex, kredensial disensor) +
+    /// narasi tahap koneksi, dari sejak app dibuka — bukan cuma sesi terakhir.
+    /// Ini yang dibagikan kalau connect "berhasil tapi timeout" biar bisa
+    /// dianalisa persis nyangkut di byte/detik yang mana.
+    private var logSheet: some View {
+        NavigationStack {
+            VStack(spacing: 20) {
+                VStack(spacing: 6) {
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.system(size: 40))
+                        .foregroundStyle(accent)
+                    Text("\(store.logLineCount) baris terkumpul")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                    Text("Rekaman semua frame BLE (TX/RX mentah) + tahap koneksi sejak app dibuka. Kredensial (ccuid/passKey/phoneUUID) dan VIN otomatis disensor — aman dibagikan/dikirim buat dianalisa.")
+                        .font(.caption)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 24)
+                }
+                .padding(.top, 12)
+
+                VStack(spacing: 10) {
+                    Button {
+                        #if canImport(UIKit)
+                        UIPasteboard.general.string = store.logText()
+                        #endif
+                        showCopiedToast = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+                            showCopiedToast = false
+                        }
+                    } label: {
+                        Label(showCopiedToast ? "Tersalin!" : "Salin Log", systemImage: "doc.on.doc")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(accent)
+
+                    Button {
+                        logSnapshotForExport = store.logText()
+                        showLogExporter = true
+                    } label: {
+                        Label("Simpan sebagai File…", systemImage: "square.and.arrow.down")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button(role: .destructive) {
+                        store.clearLog()
+                    } label: {
+                        Label("Hapus Log", systemImage: "trash")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(store.logLineCount == 0)
+                }
+                .padding(.horizontal, 24)
+
+                Spacer()
+            }
+            .navigationTitle("Log Diagnostik")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Tutup") { showLogSheet = false }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
     }
 
     // MARK: - Helpers
@@ -362,6 +570,29 @@ struct ContentView: View {
         case .scanning, .connecting, .authenticating: return .orange
         case .poweredOff: return .gray
         }
+    }
+}
+
+/// Dokumen plain-text buat `.fileExporter` — dipakai tombol "Simpan sebagai
+/// File…" di logSheet. Cukup write-only (init(configuration:) tidak akan
+/// pernah dipakai karena app ini tidak menawarkan buka-log-lama), tapi
+/// FileDocument mewajibkan itu ada.
+struct LogDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.plainText] }
+
+    var text: String
+    init(text: String) { self.text = text }
+
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents,
+              let string = String(data: data, encoding: .utf8) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        text = string
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: Data(text.utf8))
     }
 }
 

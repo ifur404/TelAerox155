@@ -1,7 +1,7 @@
 import Foundation
 
 /// Tipe frame RX (byte[0]), dari identifyMessage APK + validasi capture.
-public enum FrameType: UInt8, CaseIterable {
+nonisolated public enum FrameType: UInt8, CaseIterable {
     case localRecord    = 0x55  // 'U' engine/diag/odometer (SCCU_BLE_01_48OP)
     case can            = 0x56  // 'V' status CAN
     case ffdOrMarket    = 0x59  // 'Y' freeze-frame / market / config pages
@@ -11,7 +11,7 @@ public enum FrameType: UInt8, CaseIterable {
 }
 
 /// Satu record TLV di dalam frame.
-public struct TLVRecord: Equatable {
+nonisolated public struct TLVRecord: Equatable {
     public let localID: (UInt8, UInt8)
     public let length: Int
     public let dataStart: Int   // index awal data di dalam frame utuh
@@ -21,12 +21,17 @@ public struct TLVRecord: Equatable {
     }
 }
 
-public enum FrameError: Error, Equatable {
+nonisolated public enum FrameError: Error, Equatable {
     case tooShort
     case badChecksum
     case recordHeaderBeyondFrame
     case recordDataBeyondFrame
     case unexpectedRecordCount(Int)
+    /// TLV walk selesai tapi tersisa != 2 byte (counter + checksum). App resmi
+    /// mewajibkan ini (p014i/c.java:603-605 verifyDataFormat) sebagai gerbang
+    /// tambahan; sebelumnya kita hanya cek checksum, jadi frame checksum-valid
+    /// tapi struktur TLV-nya rusak bisa lolos ke decoder.
+    case trailingBytesMismatch(expected: Int, actual: Int)
 }
 
 /// Frame RX utuh (sudah lengkap dari satu notifikasi CoreBluetooth).
@@ -34,7 +39,7 @@ public enum FrameError: Error, Equatable {
 /// Catatan: di CoreBluetooth, `didUpdateValueFor` memberi nilai notifikasi UTUH —
 /// reassembly L2CAP (yang perlu saat baca capture PacketLogger mentah) TIDAK perlu
 /// di sini. Yang wajib: verifikasi checksum tiap frame sebagai gerbang kebenaran.
-public struct Frame {
+nonisolated public struct Frame {
     public let bytes: [UInt8]
 
     public var type: FrameType? { bytes.first.flatMap(FrameType.init(rawValue:)) }
@@ -52,6 +57,10 @@ public struct Frame {
 
     /// Jalankan TLV: count di byte[1], tiap record header 3 byte
     /// `[localID-hi, localID-lo, length]`, data menyusul.
+    ///
+    /// Tidak memvalidasi bahwa walk berakhir tepat 2 byte sebelum akhir frame —
+    /// pakai `validateStructure()` untuk itu (gerbang tambahan yang dipakai app
+    /// resmi sebelum mempercayai frame).
     public func records() throws -> [TLVRecord] {
         var out: [TLVRecord] = []
         var i = 2
@@ -65,5 +74,21 @@ public struct Frame {
             i = dataStart + len
         }
         return out
+    }
+
+    /// Gerbang tambahan yang dipakai app resmi (p014i/c.java:603-605,
+    /// `verifyDataFormat`): setelah TLV walk selesai, harus tersisa TEPAT 2 byte
+    /// (counter + checksum). Checksum sendiri tidak menjamin ini — frame bisa
+    /// lolos checksum tapi punya record yang tumpang tindih/salah panjang dan
+    /// menyisakan sisa byte yang tak terduga.
+    @discardableResult
+    public func validateStructure() throws -> [TLVRecord] {
+        let recs = try records()
+        let walkEnd = recs.last.map { $0.dataStart + $0.length } ?? 2
+        let expected = bytes.count - 2
+        guard walkEnd == expected else {
+            throw FrameError.trailingBytesMismatch(expected: expected, actual: walkEnd)
+        }
+        return recs
     }
 }

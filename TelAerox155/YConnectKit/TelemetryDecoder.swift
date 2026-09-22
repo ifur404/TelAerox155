@@ -1,7 +1,7 @@
 import Foundation
 
 /// Satu nilai hasil decode, membawa raw + nilai terskala.
-public struct DecodedValue: Equatable {
+nonisolated public struct DecodedValue: Equatable {
     public let key: String
     public let name: String
     public let raw: Double
@@ -10,7 +10,7 @@ public struct DecodedValue: Equatable {
 }
 
 /// Snapshot telemetri: kumpulan field terdecode dari satu (atau beberapa) frame.
-public struct TelemetrySnapshot {
+nonisolated public struct TelemetrySnapshot {
     public private(set) var values: [String: DecodedValue] = [:]
 
     public mutating func merge(_ decoded: [DecodedValue]) {
@@ -28,12 +28,12 @@ public struct TelemetrySnapshot {
     public var odometer: Double? { value("odometer") }
 }
 
-public enum DecodeError: Error, Equatable {
+nonisolated public enum DecodeError: Error, Equatable {
     case tlvMismatch(String)   // struktur record tidak sesuai ekspektasi
 }
 
 /// Decoder telemetri berbasis mapping.
-public struct TelemetryDecoder {
+nonisolated public struct TelemetryDecoder {
     public let mapping: Mapping
     /// Bila true, validasi struktur TLV frame 0x55 sebelum mempercayai ByteNo absolut.
     public let validateTLV: Bool
@@ -76,6 +76,12 @@ public struct TelemetryDecoder {
         case .si8:  return BinaryReader.s8(b, item.byteNo).map(Double.init)
         case .ui16: return BinaryReader.u16be(b, item.byteNo).map(Double.init)
         case .si16: return BinaryReader.s16be(b, item.byteNo).map(Double.init)
+        // PERINGATAN: .d selalu dibaca sebagai 4 byte (u32be). Sample mapping
+        // Yamaha (mapping-overrides.json) memakai Format "D" dengan Length 8
+        // bit untuk beberapa field (aki/gas/tekanan) — kalau Mapping dimuat
+        // dari JSON vendor apa adanya, field 8-bit ber-Format "D" akan salah
+        // baca 4 byte. Tabel .sccu1Aerox155 aman karena field itu dideklarasikan
+        // .ui8 secara eksplisit, bukan .d.
         case .ui32, .d: return BinaryReader.u32be(b, item.byteNo).map { Double($0) }
         case .si32: return BinaryReader.s32be(b, item.byteNo).map(Double.init)
         case .fg:   return BinaryReader.u8(b, item.byteNo).map { $0 != 0 ? 1 : 0 }

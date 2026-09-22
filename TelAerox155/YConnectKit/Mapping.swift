@@ -2,7 +2,7 @@ import Foundation
 
 /// Encoding nilai (subset Format string dari decoder APK s/a.java yang relevan
 /// untuk telemetri read-only). Semua multi-byte = BIG-ENDIAN.
-public enum ValueFormat: String, Codable {
+nonisolated public enum ValueFormat: String, Codable {
     case ui8 = "UI8", si8 = "SI8"
     case ui16 = "UI16", si16 = "SI16"
     case ui32 = "UI32", si32 = "SI32"
@@ -15,7 +15,7 @@ public enum ValueFormat: String, Codable {
 ///
 /// `byteNo` = index ABSOLUT ke dalam frame utuh (index 0 = byte tipe).
 /// Nilai akhir = raw * factorTop / factorBottom + offset (bottom 0 → dianggap 1).
-public struct MappingItem: Codable, Equatable {
+nonisolated public struct MappingItem: Codable, Equatable {
     public let key: String          // pengenal stabil untuk kode (mis. "rpm")
     public let name: String         // nama tampil
     public let frameType: UInt8     // ServiceID: 0x55, 0x56, 0x5B, ...
@@ -35,7 +35,7 @@ public struct MappingItem: Codable, Equatable {
     }
 }
 
-public struct Mapping {
+nonisolated public struct Mapping {
     public let items: [MappingItem]
     public init(items: [MappingItem]) { self.items = items }
 
@@ -51,7 +51,12 @@ public struct Mapping {
     }
 }
 
-public extension Mapping {
+// nonisolated: `Mapping` sendiri dideklarasikan nonisolated, tapi anggota di
+// extension tidak otomatis ikut — perlu ditandai lagi di sini, kalau tidak
+// static let ini terinfer MainActor-isolated (proyek pakai
+// SWIFT_DEFAULT_ACTOR_ISOLATION=MainActor) dan gagal dipakai dari init default
+// TelemetryDecoder yang dipanggil dari konteks nonisolated (mis. YConnectClient).
+nonisolated public extension Mapping {
     /// Mapping SCCU1 default untuk Aerox 155 ABS.
     ///
     /// Nilai TERKONFIRMASI dari capture Aerox-155.pklg (v2). Satu override penting:
@@ -62,8 +67,14 @@ public extension Mapping {
         MappingItem(key: "rpm",      name: "Putaran Mesin",      frameType: 0x55, byteNo: 5,  format: .ui16, unit: "rpm"),
         MappingItem(key: "speed",    name: "Kecepatan",          frameType: 0x55, byteNo: 7,  format: .ui8,  unit: "km/h"),
         MappingItem(key: "battery",  name: "Tegangan Aki",       frameType: 0x55, byteNo: 11, format: .ui8,  factorTop: 1, factorBottom: 13, unit: "V"),
-        MappingItem(key: "throttle", name: "Bukaan Gas",         frameType: 0x55, byteNo: 13, format: .ui8,  factorTop: 125, factorBottom: 256, unit: "%"),
-        MappingItem(key: "coolant",  name: "Suhu Mesin",         frameType: 0x55, byteNo: 19, format: .si8,  offset: -30, unit: "°C"),
+        // Unit "deg" (bukan "%"): mapping-overrides.json:62 menyatakan derajat;
+        // skala 125/256 atas raw 0-255 menghasilkan 0-124.5, yang cocok dengan derajat.
+        MappingItem(key: "throttle", name: "Bukaan Gas",         frameType: 0x55, byteNo: 13, format: .ui8,  factorTop: 125, factorBottom: 256, unit: "°"),
+        // .ui8 (bukan .si8): Aerox rutin menyentuh 100-105°C (kipas radiator nyala).
+        // .si8 + offset -30 bikin raw >=128 (setara suhu >=98°C) terbaca negatif —
+        // capture cuma sempat merekam 33-34°C jadi tidak membantah ini, tapi rentang
+        // fisik mesin membuktikan raw harus dibaca unsigned.
+        MappingItem(key: "coolant",  name: "Suhu Mesin",         frameType: 0x55, byteNo: 19, format: .ui8,  offset: -30, unit: "°C"),
         MappingItem(key: "intake",   name: "Suhu Udara Masuk",   frameType: 0x55, byteNo: 20, format: .ui8,  offset: -30, unit: "°C"),
         MappingItem(key: "baro",     name: "Tekanan Udara",      frameType: 0x55, byteNo: 23, format: .ui8,  factorTop: 127, factorBottom: 256, unit: "kPa"),
         MappingItem(key: "fiError",  name: "Jumlah Error FI",    frameType: 0x55, byteNo: 28, format: .ui8),

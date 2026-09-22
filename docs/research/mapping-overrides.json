@@ -1,0 +1,151 @@
+{
+  "_meta": {
+    "source": "jadx-out/resources/assets/jsons/Sample_SCCU1_MappingFile.json",
+    "capture": "Aerox-155.pklg (2026-09-20, mesin hidup/idling saat stream telemetri)",
+    "based_on": "277 frame 0x55 utuh (47 byte, checksum 100% valid) + frame 0x59/0x5B ter-reassembly L2CAP",
+    "warning": "Faktor override adalah nilai yang PALEH masuk akal secara fisika pada capture ini. Untuk field yang nilai sampelnya sudah pas, tidak dibuat override. Endianness yang terbukti dari data: numerik 0x55 = BIG-ENDIAN (rpm, odometer)."
+  },
+  "overrides": [
+    {
+      "ID": "0x00000001",
+      "ItemName": "バッテリ電圧 (voltase aki)",
+      "ByteNo": 11,
+      "Length": 8,
+      "Format": "D",
+      "SampleFactorTop": 1,
+      "SampleFactorBottom": 2,
+      "OverrideFactorTop": 1,
+      "OverrideFactorBottom": 13,
+      "Offset": 0,
+      "Unit": "V",
+      "raw_range": "147..192 (median engine-on 187, mengikuti putaran mesin)",
+      "sample_scaled": "73.5..96.0 V (TERBANTAH - fisika tidak mungkin)",
+      "override_scaled": "11.3..14.8 V (akur saat cranking ~11.3, jalan ~14.4)",
+      "reason": "Voltase aki 12V tidak mungkin ~88V. Faktor fb=13 memberi rentang khas sistem 12V (cranking ~11.3V, idle/berjalan ~13.4..14.8V). Nilai mentah naik seiring RPM (bukti voltase charging).",
+      "formula": "scaled = raw * (OverrideFactorTop / OverrideFactorBottom)"
+    }
+  ],
+  "confirmed_no_override": [
+    {
+      "ID": "0x00000001",
+      "ItemName": "EG回転速度 (RPM)",
+      "ByteNo": 5,
+      "Length": 16,
+      "Format": "UI16",
+      "FactorTop": 1,
+      "FactorBottom": 1,
+      "Unit": "rpm",
+      "raw": "BE16 [5:7]",
+      "scaled": "idle ~1450..1660 (median 1578), puncak 2903 saat blip; 0 saat mesin mati",
+      "reason": "Faktor fb=1 TERKONFIRMASI. fb=1/2 -> 775 rpm terlalu rendah untuk Aerox 155 idle."
+    },
+    {
+      "ID": "0x00000001",
+      "ItemName": "車速",
+      "ByteNo": 7,
+      "Length": 8,
+      "Format": "UI8",
+      "FactorTop": 1,
+      "FactorBottom": 1,
+      "Unit": "km/h",
+      "raw": "0 (motor diam)",
+      "reason": "Tidak ada gerakan di capture; faktor tidak bisa diverifikasi namun tidak dipakai."
+    },
+    {
+      "ID": "0x00000001",
+      "ItemName": "相対スロットル開度",
+      "ByteNo": 13,
+      "Length": 8,
+      "Format": "D",
+      "FactorTop": 125,
+      "FactorBottom": 256,
+      "Unit": "deg",
+      "raw": "1 (idle) / 7..8 (blip throttle)",
+      "scaled": "0.5 (idle) / 3.4..3.9 (blip)",
+      "reason": "TERKONFIRMASI (konsisten)."
+    },
+    {
+      "ID": "0x00000001",
+      "ItemName": "冷却水温または機温",
+      "ByteNo": 19,
+      "Length": 8,
+      "Format": "SI8",
+      "FactorTop": 1,
+      "FactorBottom": 1,
+      "Offset": -30,
+      "Unit": "C",
+      "raw": "63..64",
+      "scaled": "33..34 C",
+      "reason": "TERKONFIRMASI (offset -30 cocok, mesin baru start)."
+    },
+    {
+      "ID": "0x00000001",
+      "ItemName": "吸入空気温度",
+      "ByteNo": 20,
+      "Length": 8,
+      "Format": "UI8",
+      "FactorTop": 1,
+      "FactorBottom": 1,
+      "Offset": -30,
+      "Unit": "C",
+      "raw": "58..59",
+      "scaled": "28..29 C",
+      "reason": "TERKONFIRMASI."
+    },
+    {
+      "ID": "0x00000001",
+      "ItemName": "大気圧",
+      "ByteNo": 23,
+      "Length": 8,
+      "Format": "D",
+      "FactorTop": 127,
+      "FactorBottom": 256,
+      "Unit": "kPa",
+      "raw": "200",
+      "scaled": "99.2 kPa (permukaan laut ~101)",
+      "reason": "TERKONFIRMASI."
+    },
+    {
+      "ID": "0x00000001",
+      "ItemName": "検出異常個数 (FI)",
+      "ByteNo": 28,
+      "Length": 8,
+      "Format": "UI8",
+      "FactorTop": 1,
+      "FactorBottom": 1,
+      "Unit": "item",
+      "raw": "0",
+      "reason": "Tidak ada error FI (wajar: motor baru)."
+    },
+    {
+      "ID": "0x00000001",
+      "ItemName": "検出異常DTC (FI)",
+      "ByteNo": 29,
+      "Length": 16,
+      "Format": "UI16",
+      "FactorTop": 1,
+      "FactorBottom": 1,
+      "raw": "0",
+      "reason": "Tidak ada DTC tercatat."
+    },
+    {
+      "ID": "0x00000048",
+      "ItemName": "走行距離 (odometer)",
+      "ByteNo": 41,
+      "Length": 32,
+      "Format": "D",
+      "FactorTop": 1,
+      "FactorBottom": 10,
+      "Unit": "km",
+      "raw": "00 06 b9 f3 (BE32)",
+      "scaled": "44,081.9 km (BE / 10)",
+      "le_absurd": "LE32 / 10 = 408,898,918 km (TERBANTAH)",
+      "reason": "Odometer = BIG-ENDIAN. semua 277 frame = nilai sama 44081.9 km."
+    }
+  ],
+  "endianness_notes": {
+    "0x55_payload_numeric": "BIG-ENDIAN (terverifikasi: RPM [5:7], odometer [41:44])",
+    "auth_0xAA_header_b2_b3": "LITTLE-ENDIAN 0x007F = 127",
+    "l2cap_header": "LITTLE-ENDIAN u16 (panjang & CID)"
+  }
+}

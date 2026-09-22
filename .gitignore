@@ -1,5 +1,12 @@
 # Kredensial motor — jangan commit/share
+secrets.local.json
 TelAerox155/secrets.local.json
+
+# Capture BLE mentah / hasil reverse-engineering app pihak lain — jangan commit
+*.pklg
+*.apk
+jadx-out/
+jadx-gui*/
 
 # Xcode
 xcuserdata/

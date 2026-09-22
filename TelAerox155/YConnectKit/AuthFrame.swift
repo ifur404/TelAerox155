@@ -2,7 +2,7 @@ import Foundation
 
 /// Kredensial motor — SATU-SATUNYA hal yang perlu ditulis ke CCU.
 /// Diperoleh sekali dari capture app resmi (lihat secrets.local.json).
-public struct Credentials: Codable, Equatable {
+nonisolated public struct Credentials: Codable, Equatable {
     public let ccuid: String       // 14 char ASCII
     public let passKey: String     // 6 char ASCII
     public let phoneUUID: String   // 32 hex char (UUID tanpa tanda hubung)
@@ -16,7 +16,7 @@ public struct Credentials: Codable, Equatable {
     }
 }
 
-public enum AuthError: Error, Equatable {
+nonisolated public enum AuthError: Error, Equatable {
     case badCCUIDLength(Int)      // harus 14
     case badPassKeyLength(Int)    // harus 6
     case badPhoneUUIDLength(Int)  // harus 32
@@ -29,7 +29,7 @@ public enum AuthError: Error, Equatable {
 /// [0]=0xAA [1]=0x01 [2..3]=0x7F00 (LE) [4]=0x35
 /// [5..18]=ccuid [19..24]=passKey [25..56]=phoneUUID
 /// [57]=bondingFlag (0=bonded, 1=first) [58]=counter [59]=checksum
-public enum AuthFrame {
+nonisolated public enum AuthFrame {
 
     public static let length = 60
 
@@ -65,7 +65,7 @@ public enum AuthFrame {
 }
 
 /// Hasil parse balasan StartProcessing 0x5A (8 byte).
-public struct StartProcessing {
+nonisolated public struct StartProcessing {
     public let raw: [UInt8]
     public var flag: UInt8 { raw.count > 5 ? raw[5] : 0 }
     public var accepted: Bool { flag == 1 }
