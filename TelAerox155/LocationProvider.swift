@@ -57,6 +57,9 @@ final class LocationProvider: NSObject, ObservableObject, CLLocationManagerDeleg
     func stop() {
         manager.stopUpdatingLocation()
         isActive = false
+        // Kosongkan biar CSV nggak kebawa nulis titik lokasi basi dari sesi
+        // rekaman sebelumnya begitu GPS dinyalakan lagi sebelum fix baru datang.
+        lastLocation = nil
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {

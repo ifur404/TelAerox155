@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import SwiftUI
+import CoreLocation
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -51,6 +52,9 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
 
     private var client: YConnectClient?
 
+    /// Subscription GPS/rekaman — lihat `bindRecorderToLocation()`.
+    private var cancellables = Set<AnyCancellable>()
+
     /// Log diagnostik mentah (semua frame TX/RX hex + narasi tahap), bertahan
     /// lintas sesi/reconnect — supaya "connect sukses tapi timeout" yang
     /// keburu putus sebelum sempat dibaca tetap kepegang buat dianalisa nanti
@@ -63,7 +67,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     let recorder = SessionRecorder()
 
     /// GPS — dipakai kolom gps_* di rekaman CSV. Nyala/mati otomatis mengikuti
-    /// status rekaman CSV (lihat startLogCountTimer), bukan dikontrol
+    /// status rekaman CSV (lihat bindRecorderToLocation), bukan dikontrol
     /// terpisah oleh user, supaya baterai tidak boros GPS terus-menerus kalau
     /// tidak sedang merekam.
     let location = LocationProvider()
@@ -73,6 +77,17 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     /// tiap 50ms) lewat `logCountTimer`.
     @Published private(set) var logLineCount: Int = 0
     private var logCountTimer: Timer?
+
+    /// Kapan baris CSV terakhir ditulis — dipakai `sampleCSVIfDue()` supaya
+    /// output tetap ~1 baris/detik walau dipicu dari dua sumber (timer 1 Hz
+    /// DAN notifikasi BLE, lihat komentar di `sampleCSVIfDue()`).
+    private var lastCSVSampleAt: Date?
+
+    override init() {
+        super.init()
+        bindRecorderToLocation()
+        observeAppLifecycle()
+    }
 
     var isActive: Bool {
         switch state {
@@ -208,8 +223,24 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
             diagLog.log(.info, "=== disconnect() dipanggil user ===")
         }
         refreshLogCount()
-        stopLogCountTimer()
-        if location.isActive { location.stop() }
+        // Rekaman (recorder.isRecording) SENGAJA tidak ikut dihentikan di sini
+        // — "Putuskan" cuma memutus BLE, bukan "Stop Rekam". Timer 1 Hz juga
+        // SENGAJA tidak ikut dimatikan kalau rekaman masih aktif: itu satu-
+        // satunya yang mengecek limit durasi (recorder.enforceDurationLimitIfNeeded)
+        // walau BLE lagi terputus lama — tanpa ini, rekaman yang lupa di-Stop
+        // pas motor mati/keluar jangkauan bisa nyangkut nyala tanpa batas
+        // (baterai boros GPS terus, limit 6 jam nggak pernah kecek). Baris CSV
+        // sendiri tetap AMAN tidak ikut ditulis pakai data basi selagi
+        // terputus — lihat guard `state == .streaming` di sampleCSVIfDue().
+        if !recorder.isRecording {
+            stopLogCountTimer()
+        }
+        // GPS dibiarkan tetap nyala kalau CSV masih direkam supaya begitu user
+        // connect() lagi, kolom gps_* langsung lanjut terisi tanpa perlu
+        // restart rekaman manual (location cuma di-stop reaktif oleh
+        // bindRecorderToLocation saat recorder benar-benar berhenti).
+        let recordingCSV = recorder.isRecording && recorder.format == .csv
+        if location.isActive && !recordingCSV { location.stop() }
     }
 
     // MARK: - Log diagnostik
@@ -217,22 +248,18 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     private func startLogCountTimer() {
         stopLogCountTimer()
         refreshLogCount()
-        // Timer 1 Hz yang sama juga men-sampling satu baris CSV kalau rekaman
-        // format CSV sedang aktif (appendCSVRow no-op kalau tidak) — cukup satu
-        // timer buat dua keperluan, tidak perlu Timer terpisah 1 Hz lagi.
-        // GPS dinyala/dimatikan mengikuti status rekaman CSV di tick yang sama.
+        // Timer 1 Hz ini masih jadi sumber sampling CSV utama saat foreground/
+        // BLE lagi diam, tapi BUKAN satu-satunya lagi — lihat sampleCSVIfDue().
         let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self else { return }
             Task { @MainActor in
                 self.refreshLogCount()
-                let recordingCSV = self.recorder.isRecording && self.recorder.format == .csv
-                if recordingCSV {
-                    if !self.location.isActive { self.location.start() }
-                    self.recorder.appendCSVRow(snapshot: self.snapshot, vin: self.vin,
-                                               modelCode: self.modelCode, location: self.location.lastLocation)
-                } else if self.location.isActive {
-                    self.location.stop()
-                }
+                // Dicek tiap detik TERLEPAS dari state BLE/apakah ada baris
+                // baru ditulis — supaya rekaman yang idle lama (disconnect
+                // manual atau auto-reconnect berkepanjangan) tetap kena batas
+                // durasi otomatis (lihat dokblok disconnect()).
+                self.recorder.enforceDurationLimitIfNeeded()
+                self.sampleCSVIfDue()
             }
         }
         RunLoop.main.add(t, forMode: .common)
@@ -246,6 +273,101 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
 
     private func refreshLogCount() {
         logLineCount = diagLog.count
+    }
+
+    /// Tulis satu baris CSV kalau sedang merekam CSV DAN sudah ≥ ~1 detik
+    /// sejak baris terakhir. Dipanggil dari DUA sumber:
+    /// - timer 1 Hz (`startLogCountTimer`), cukup saat app di foreground atau
+    ///   background dengan GPS aktif;
+    /// - `client(_:didUpdate:)`, karena notifikasi BLE (~20 Hz) tetap
+    ///   membangunkan app di background lewat `bluetooth-central` walau GPS
+    ///   tidak aktif (mis. izin lokasi ditolak) — tanpa ini timer bisa telat/
+    ///   berhenti kalau app disuspend dan baris CSV jadi bolong saat layar
+    ///   dikunci. Throttle di sini yang menjaga hasilnya tetap 1 baris/detik
+    ///   walau dipicu dari dua tempat.
+    private func sampleCSVIfDue() {
+        guard recorder.isRecording, recorder.format == .csv else { return }
+        // Jangan tulis baris pakai `snapshot` basi kalau BLE sedang TIDAK
+        // streaming (disconnect manual, auto-reconnect, gagal auth, dsb) —
+        // tanpa guard ini, timer 1 Hz tetap menulis nilai rpm/speed/dll BEKU
+        // dari update terakhir, dan itu tidak bisa dibedakan dari data live
+        // asli kalau CSV-nya dibaca belakangan.
+        guard state == .streaming else { return }
+        if let last = lastCSVSampleAt, Date().timeIntervalSince(last) < 0.95 { return }
+        lastCSVSampleAt = Date()
+        recorder.appendCSVRow(snapshot: snapshot, vin: vin, modelCode: modelCode,
+                               location: freshLocation())
+    }
+
+    /// `location.lastLocation`, tapi kosong kalau fix-nya sudah lebih tua dari
+    /// ~5 detik (mis. GPS kehilangan sinyal di terowongan/parkiran tertutup)
+    /// — daripada CSV terus-terusan nulis titik lama yang terlihat seperti
+    /// motor "diam" di tempat yang sama padahal GPS-nya cuma lagi nggak dapet fix.
+    private func freshLocation() -> CLLocation? {
+        guard let loc = location.lastLocation,
+              Date().timeIntervalSince(loc.timestamp) <= 5 else { return nil }
+        return loc
+    }
+
+    /// GPS mengikuti status rekaman CSV, tapi dinyalakan LANGSUNG saat rekaman
+    /// dimulai (masih di foreground, saat tombol "Mulai Rekam" ditekan) —
+    /// bukan menunggu tick timer 1 Hz berikutnya. Kalau layar keburu dikunci
+    /// sebelum tick itu, `CLLocationManager.startUpdatingLocation()` tidak
+    /// bisa dipanggil pertama kali dari background dengan izin "Saat
+    /// Digunakan", jadi app kehilangan salah satu "penahan" background-nya.
+    private func bindRecorderToLocation() {
+        recorder.$isRecording
+            .combineLatest(recorder.$format)
+            .map { isRecording, format in isRecording && format == .csv }
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] recordingCSV in
+                guard let self else { return }
+                self.lastCSVSampleAt = nil
+                if recordingCSV {
+                    self.location.start()
+                } else if self.location.isActive {
+                    self.location.stop()
+                }
+            }
+            .store(in: &cancellables)
+
+        // Kalau start() dipanggil saat izin masih .notDetermined, itu cuma
+        // memunculkan prompt sistem — begitu user merespons (izin diberikan),
+        // coba start() lagi kalau rekaman CSV masih berjalan.
+        location.$authorizationStatus
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                let recordingCSV = self.recorder.isRecording && self.recorder.format == .csv
+                if recordingCSV && !self.location.isActive {
+                    self.location.start()
+                }
+            }
+            .store(in: &cancellables)
+    }
+
+    /// Catat transisi background/foreground ke `diagLog` (kalau diagLogEnabled)
+    /// — murni buat mencocokkan "bolong" di CSV rekaman dengan momen layar
+    /// dikunci saat menganalisa hasil rekaman nanti, tidak mempengaruhi alur.
+    private func observeAppLifecycle() {
+        #if canImport(UIKit)
+        NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)
+            .sink { [weak self] _ in
+                if self?.diagLogEnabled == true {
+                    self?.diagLog.log(.info, "=== app → background ===")
+                }
+            }
+            .store(in: &cancellables)
+        NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)
+            .sink { [weak self] _ in
+                if self?.diagLogEnabled == true {
+                    self?.diagLog.log(.info, "=== app → foreground ===")
+                }
+            }
+            .store(in: &cancellables)
+        #endif
     }
 
     /// Seluruh log siap salin/simpan.
@@ -273,6 +395,9 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
 
     func client(_ client: YConnectClient, didUpdate snapshot: TelemetrySnapshot) {
         self.snapshot = snapshot
+        // Lihat dokblok sampleCSVIfDue(): notifikasi BLE ini yang menjaga
+        // rekaman CSV tetap jalan di background walau timer 1 Hz telat/mati.
+        sampleCSVIfDue()
     }
 
     func client(_ client: YConnectClient, didReceiveVIN vin: String) {

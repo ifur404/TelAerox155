@@ -134,6 +134,15 @@ public final class YConnectClient: NSObject {
     private var txChar: CBCharacteristic?
     private var rxChar: CBCharacteristic?
 
+    /// Identifier CCU terakhir yang berhasil di-match lewat scan-by-nama.
+    /// Dipakai `start()` buat nyambung ulang lewat `retrievePeripherals(withIdentifiers:)`
+    /// TANPA scan — perlu karena scan tanpa filter service UUID (lihat komentar
+    /// di `start()`) TIDAK menghasilkan apa pun kalau app di background (dibatasi
+    /// iOS). In-memory saja (bukan UserDefaults): cukup buat kasus app
+    /// disuspend/dibangunkan lagi selama proses masih hidup, bukan buat
+    /// bertahan lintas relaunch penuh.
+    private var lastKnownPeripheralID: UUID?
+
     private var snapshot = TelemetrySnapshot()
     private var didTryBondingFallback = false
     private var lastBondedSent = false
@@ -159,18 +168,57 @@ public final class YConnectClient: NSObject {
         self.credentials = credentials
         self.decoder = decoder
         super.init()
-        self.central = CBCentralManager(delegate: self, queue: queue)
+        // Restore identifier: kalau iOS mematikan app di background (tekanan
+        // memori) selagi masih ada koneksi BLE aktif, sistem bisa membangunkan
+        // app lagi dan memanggil willRestoreState(_:) dengan peripheral yang
+        // sama — tanpa ini, sesi + rekaman yang sedang jalan hilang total tanpa
+        // kesempatan nyambung ulang otomatis.
+        let options: [String: Any] = [
+            CBCentralManagerOptionRestoreIdentifierKey: "com.rupi.TelAerox155.central"
+        ]
+        self.central = CBCentralManager(delegate: self, queue: queue, options: options)
     }
 
     public func start() {
         guard central.state == .poweredOn else { return }
         userRequestedStop = false
+        if let p = peripheral, p.state == .connected || p.state == .connecting {
+            // Sudah tersambung/lagi proses nyambung (mis. baru dipulihkan lewat
+            // willRestoreState) — jangan mulai scan/connect baru yang dobel.
+            return
+        }
+        if let savedID = lastKnownPeripheralID,
+           let known = central.retrievePeripherals(withIdentifiers: [savedID]).first {
+            // Nyambung ulang pakai identifier tersimpan, TANPA scan — penting
+            // karena scan tanpa filter service UUID (lihat komentar di bawah)
+            // tidak menghasilkan apa pun kalau app sedang di background.
+            onAuthStage?("radio nyala lagi — coba sambung ulang ke CCU tersimpan tanpa scan")
+            connect(to: known)
+            return
+        }
         state = .scanning
         // Scan SEMUA peripheral, bukan filter service UUID. CCU Aerox ngiklanin
         // NAMA ("YSCCU_<ccuid>" / "YCCU_<ccuid>") — UUID service NUS tidak selalu
         // ikut di paket advertisement, jadi iOS filter-by-service bisa nyasar CCU.
         // Pemfilteran dilakukan lewat nama di didDiscover (DeviceName + CCUID).
+        // CATATAN: scan tanpa filter service UUID hanya jalan di FOREGROUND —
+        // iOS mengabaikan scan seperti ini kalau app di background. Reconnect
+        // background mengandalkan jalur retrievePeripherals di atas.
         central.scanForPeripherals(withServices: nil, options: nil)
+    }
+
+    /// Mulai proses connect ke satu peripheral yang sudah pasti CCU kita (dari
+    /// scan-by-nama ATAU dari `retrievePeripherals`). TIDAK memasang watchdog
+    /// di sini — `central.connect()` di iOS memang boleh pending tanpa batas
+    /// waktu sampai peripheral-nya kejangkau lagi (mis. motor sempat di luar
+    /// jangkauan/mati saat reconnect di background), dan itu perilaku yang
+    /// diinginkan. Watchdog baru dipasang di `didConnect()`, membatasi fase
+    /// discover→subscribe SETELAH benar-benar tersambung secara fisik.
+    private func connect(to p: CBPeripheral) {
+        peripheral = p
+        lastKnownPeripheralID = p.identifier
+        state = .connecting
+        central.connect(p, options: nil)
     }
 
     public func stop() {
@@ -441,9 +489,51 @@ public final class YConnectClient: NSObject {
 extension YConnectClient: CBCentralManagerDelegate {
     public func centralManagerDidUpdateState(_ central: CBCentralManager) {
         switch central.state {
-        case .poweredOn: start()
-        default: state = .poweredOff
+        case .poweredOn:
+            start()
+        default:
+            // Radio mati/reset (dimatikan user, unauthorized, dsb) — bersihkan
+            // watchdog/keep-alive supaya tidak nyangkut nunggu event yang
+            // tidak akan pernah datang. BUKAN userRequestedStop: begitu radio
+            // balik .poweredOn, start() otomatis nyoba nyambung ulang lagi
+            // lewat lastKnownPeripheralID (peripheral & identifier SENGAJA
+            // tidak dibuang di sini).
+            disarmAuthWatchdog()
+            disarmConnectWatchdog()
+            disarmStreamWatchdog()
+            stopKeepAlive()
+            txChar = nil
+            rxChar = nil
+            state = .poweredOff
         }
+    }
+
+    /// Dipanggil iOS kalau app dibangunkan ulang di background setelah
+    /// sebelumnya di-kill (tekanan memori) sementara masih punya koneksi BLE
+    /// aktif — lihat `CBCentralManagerOptionRestoreIdentifierKey` di init.
+    /// Tanpa ini, sesi + rekaman yang sedang jalan hilang total tanpa
+    /// kesempatan nyambung ulang otomatis begitu app dibangunkan lagi.
+    public func centralManager(_ central: CBCentralManager,
+                               willRestoreState dict: [String: Any]) {
+        guard let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral],
+              let p = peripherals.first else { return }
+        onAuthStage?("state restoration: CCU dipulihkan iOS (cbState=\(p.state.rawValue)) — verifikasi ulang services")
+        peripheral = p
+        lastKnownPeripheralID = p.identifier
+        p.delegate = self
+        txChar = nil
+        rxChar = nil
+        if p.state == .connected {
+            // iOS sudah nyambung ulang secara fisik SEBELUM app hidup lagi —
+            // jangan asumsikan services/characteristics lama masih valid,
+            // discover ulang dari nol lalu lanjut alur normal (subscribe →
+            // auth) lewat delegate method yang sudah ada.
+            state = .connecting
+            armConnectWatchdog()
+            p.discoverServices([CBUUID(string: NUS.serviceString)])
+        }
+        // Kalau belum .connected, biarkan CoreBluetooth yang nyambungin ulang
+        // sendiri — didConnect() bakal kepanggil normal begitu berhasil.
     }
 
     public func centralManager(_ central: CBCentralManager,
@@ -469,15 +559,15 @@ extension YConnectClient: CBCentralManagerDelegate {
         // peripheral itu bukan CCU kita — lanjut scan aja.
         guard isMatch else { return }
 
-        self.peripheral = peripheral
         central.stopScan()
-        state = .connecting
-        armConnectWatchdog()
-        central.connect(peripheral, options: nil)
+        connect(to: peripheral)
     }
 
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         onAuthStage?("BLE connect OK — discover services…")
+        // Watchdog fase discover→subscribe dipasang di sini (bukan sebelum
+        // central.connect()) — lihat dokblok connect(to:).
+        armConnectWatchdog()
         peripheral.delegate = self
         peripheral.discoverServices([CBUUID(string: NUS.serviceString)])
     }
@@ -502,10 +592,16 @@ extension YConnectClient: CBCentralManagerDelegate {
         // → subscribe → kirim 0xAA lagi (ditangani otomatis lewat alur normal).
         if !userRequestedStop {
             onAuthStage?("terputus: \(reason) → coba nyambung ulang…")
-            state = .connecting
             didTryBondingFallback = false
-            armConnectWatchdog()
-            central.connect(peripheral, options: nil)
+            if central.state == .poweredOn {
+                connect(to: peripheral)
+            } else {
+                // Radio lagi mati/reset — jangan panggil central.connect()
+                // sekarang (bakal gagal diam2). Reconnect otomatis lanjut
+                // lewat centralManagerDidUpdateState begitu balik .poweredOn,
+                // pakai lastKnownPeripheralID (lihat start()).
+                state = .connecting
+            }
         } else {
             onAuthStage?("terputus: \(reason)")
             state = .failed("terputus: \(reason)")

@@ -48,6 +48,17 @@ final class SessionRecorder: ObservableObject {
 
     private static let csvHeader = "timestamp_iso,elapsed_s,rpm,speed_kmh,battery_v,coolant_c,intake_c,throttle_deg,baro_kpa,fiError,dtc,fiWarningLamp,injection_cc,odometer_km,ecuPowerOnTime_s,ignOnCount,vin,modelCode,gps_lat,gps_lon,gps_speed_kmh,gps_alt_m,gps_accuracy_m"
 
+    /// Dengan pecahan detik (bukan default `ISO8601DateFormatter()` yang
+    /// membulatkan ke detik) — tanpa ini, dua baris yang jaraknya < 1 detik
+    /// (mis. 12:00:00.98 lalu 12:00:01.02) bisa tampak punya timestamp SAMA
+    /// atau malah kebalik urutannya kalau dibaca sebagai teks biasa. Dibuat
+    /// statis sekali (bukan tiap baris) — formatter ini agak mahal dibuat.
+    private static let timestampFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
     /// "telaerox-rec_2026-09-22_20-14-05.csv" / ".txt" — cukup unik + gampang
     /// dibaca kalau beberapa kali rekam dalam satu sesi ujicoba di motor.
     static func makeFileName(format: Format) -> String {
@@ -67,7 +78,11 @@ final class SessionRecorder: ObservableObject {
             return nil
         }
         let url = dir.appendingPathComponent(Self.makeFileName(format: format))
-        guard FileManager.default.createFile(atPath: url.path, contents: nil),
+        // completeUntilFirstUserAuthentication (bukan default .complete) supaya
+        // file tetap bisa ditulis kalau layar dikunci di tengah sesi — cukup
+        // sekali unlock sejak boot, tidak perlu unlock tiap saat mau nulis.
+        let attrs: [FileAttributeKey: Any] = [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+        guard FileManager.default.createFile(atPath: url.path, contents: nil, attributes: attrs),
               let handle = try? FileHandle(forWritingTo: url) else {
             return nil
         }
@@ -97,7 +112,16 @@ final class SessionRecorder: ObservableObject {
 
     private func write(_ text: String) {
         guard let data = text.data(using: .utf8), let handle = fileHandle else { return }
-        handle.write(data)
+        // write(contentsOf:) (bukan write(_:) lama) supaya kegagalan nulis
+        // (mis. storage penuh/file terkunci) jadi Error yang bisa ditangani,
+        // bukan exception ObjC yang crash app — penting karena sekarang
+        // rekaman diharapkan tetap jalan tanpa pengawasan saat layar dikunci.
+        do {
+            try handle.write(contentsOf: data)
+        } catch {
+            stop(reason: "Berhenti — gagal menulis file: \(error.localizedDescription)")
+            return
+        }
         bytesWritten += data.count
         enforceLimitsIfNeeded()
     }
@@ -108,7 +132,17 @@ final class SessionRecorder: ObservableObject {
             stop(reason: "Berhenti otomatis — rekaman mencapai batas ukuran \(maxBytes / 1_048_576) MB.")
             return
         }
-        if let started = startedAt, Date().timeIntervalSince(started) >= maxDuration {
+        enforceDurationLimitIfNeeded()
+    }
+
+    /// Cek limit durasi TANPA butuh row baru ditulis — dipanggil juga dari luar
+    /// (timer 1 Hz TelemetryStore, tiap detik selama rekaman aktif) supaya
+    /// rekaman yang idle lama (mis. BLE terputus panjang tapi user lupa tekan
+    /// Stop) tetap kena batas otomatis, bukan cuma dicek pas kebetulan ada
+    /// baris baru masuk.
+    func enforceDurationLimitIfNeeded() {
+        guard isRecording, let started = startedAt else { return }
+        if Date().timeIntervalSince(started) >= maxDuration {
             stop(reason: "Berhenti otomatis — rekaman mencapai batas durasi \(Int(maxDuration / 3600)) jam.")
         }
     }
@@ -147,7 +181,7 @@ final class SessionRecorder: ObservableObject {
         let gpsAlt = location.map { String(format: "%.1f", $0.altitude) } ?? ""
         let gpsAcc = location.flatMap { $0.horizontalAccuracy >= 0 ? String(format: "%.1f", $0.horizontalAccuracy) : nil } ?? ""
         let row = [
-            ISO8601DateFormatter().string(from: Date()),
+            Self.timestampFormatter.string(from: Date()),
             String(format: "%.1f", elapsed),
             v("rpm"), v("speed"), v("battery"), v("coolant"), v("intake"),
             v("throttle"), v("baro"), v("fiError"), v("dtc"), v("fiWarningLamp"),

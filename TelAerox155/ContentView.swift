@@ -809,7 +809,7 @@ struct LogSheetView: View {
                 }
                 .pickerStyle(.segmented)
 
-                Text("BLE Raw: semua frame TX/RX mentah (kredensial/VIN disensor). CSV: satu baris per detik, nilai terdecode + header (termasuk GPS). Otomatis berhenti di 20 MB atau 6 jam. Tetap berjalan kalau app diminimize (background BLE) selama sesi masih terhubung.")
+                Text("BLE Raw: semua frame TX/RX mentah (kredensial/VIN disensor). CSV: satu baris per detik, nilai terdecode + header (termasuk GPS). Otomatis berhenti di 20 MB atau 6 jam. Tetap berjalan walau layar dikunci atau app diminimize, selama sesi masih terhubung — untuk kolom GPS di CSV tetap terisi saat terkunci, pilih izin lokasi \"Selalu\" (bukan cuma \"Saat Digunakan\").")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
 
@@ -858,9 +858,9 @@ struct LogSheetView: View {
     }
 
     /// Status GPS buat kolom gps_* di CSV — GPS baru benar-benar nyala saat
-    /// rekaman CSV berjalan (lihat TelemetryStore.startLogCountTimer), jadi
-    /// baris ini juga jadi indikator "kenapa kolom gps_* di CSV kosong" kalau
-    /// izin belum diberikan atau belum ada fix.
+    /// rekaman CSV berjalan (lihat TelemetryStore.bindRecorderToLocation),
+    /// jadi baris ini juga jadi indikator "kenapa kolom gps_* di CSV kosong"
+    /// kalau izin belum diberikan atau belum ada fix.
     private var gpsStatusRow: some View {
         HStack(spacing: 6) {
             Image(systemName: "location.fill")
@@ -904,7 +904,13 @@ struct LogSheetView: View {
         case .notDetermined:
             return "Izin lokasi akan diminta saat rekaman dimulai."
         case .authorizedWhenInUse:
-            return "Izin lokasi \"Saat Digunakan\" saja — GPS berhenti kalau app di-background. Pilih \"Selalu\" di Pengaturan buat rekaman background."
+            // Dengan izin ini pun GPS tetap lanjut di background SELAMA update-nya
+            // dimulai saat app di foreground (persis yang dilakukan tombol "Mulai
+            // Rekam" — lihat TelemetryStore.bindRecorderToLocation). Batasannya
+            // cuma: kalau app baru dibuka lagi dari kondisi benar2 mati/belum
+            // pernah start GPS, iOS tidak izinkan mulai dari background.
+            return (location.lastLocation != nil ? "GPS aktif, ada fix." : "GPS aktif, menunggu fix pertama…")
+                + " Izin \"Saat Digunakan\" — pilih \"Selalu\" di Pengaturan kalau mau lebih pasti."
         case .authorizedAlways:
             return location.lastLocation != nil ? "GPS aktif, ada fix." : "GPS aktif, menunggu fix pertama…"
         @unknown default:

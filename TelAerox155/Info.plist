@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- UIBackgroundModes butuh nilai array — INFOPLIST_KEY_UIBackgroundModes di
+	     project.pbxproj TIDAK didukung mekanisme auto-generate Info.plist Xcode
+	     (key ini diam-diam diabaikan, terbukti hilang total di Info.plist hasil
+	     build meski build setting-nya ada). File terpisah ini di-merge oleh
+	     Xcode ke Info.plist yang di-generate (GENERATE_INFOPLIST_FILE = YES
+	     tetap aktif) lewat INFOPLIST_FILE — cara resmi buat key array yang
+	     tidak disupport INFOPLIST_KEY_*. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
+		<string>location</string>
+	</array>
+</dict>
+</plist>
