@@ -455,7 +455,9 @@ struct RecordingDetailView: View {
     let accent: Color
     @Environment(\.dismiss) private var dismiss
 
-    @State private var summary: CSVSummary?
+    @State private var analysis: TripAnalysis?
+    /// Kursor waktu bersama peta/chart/replay — dibuat begitu analisis siap.
+    @State private var playback: TripPlayback?
     @State private var loadingSummary = false
     @State private var shareURL: URL?
     @State private var confirmDelete = false
@@ -483,6 +485,11 @@ struct RecordingDetailView: View {
         .navigationTitle("Detail Rekaman")
         .navigationBarTitleDisplayMode(.inline)
         .task(id: session?.endedAt) { await loadSummary() }
+        .safeAreaInset(edge: .bottom) {
+            if let playback, let s = session, s.format == .csv, !isActive {
+                TripPlaybackBar(playback: playback, accent: accent)
+            }
+        }
         .sheet(item: Binding(get: { shareURL.map(ShareItem.init) },
                              set: { shareURL = $0?.url })) { item in
             ActivityShareSheet(activityItems: [item.url])
@@ -546,19 +553,6 @@ struct RecordingDetailView: View {
             }
             .listRowBackground(RecordingPalette.card)
 
-            Section {
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                    tile("Durasi", s.duration.map(RecordingFormat.duration) ?? "Berjalan…", icon: "timer")
-                    tile("Ukuran", RecordingFormat.size(isActive ? recorder.bytesWritten : s.bytes), icon: "internaldrive")
-                    tile(s.format == .csv ? "Baris data" : "Frame",
-                         lineCountText(s), icon: "list.number")
-                    tile("Format file", s.format.fileExtension.uppercased(), icon: "doc")
-                }
-                .padding(.vertical, 4)
-            }
-            .listRowBackground(Color.clear)
-            .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
-
             if let reason = s.stopReason {
                 Section {
                     Label(reason, systemImage: "exclamationmark.triangle.fill")
@@ -569,8 +563,24 @@ struct RecordingDetailView: View {
             }
 
             if s.format == .csv && !isActive {
-                summarySection
+                analysisSections
             }
+
+            Section {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                    tile("Durasi", s.duration.map(RecordingFormat.duration) ?? "Berjalan…", icon: "timer")
+                    tile("Ukuran", RecordingFormat.size(isActive ? recorder.bytesWritten : s.bytes), icon: "internaldrive")
+                    tile(s.format == .csv ? "Baris data" : "Frame",
+                         lineCountText(s), icon: "list.number")
+                    tile("Format file", s.format.fileExtension.uppercased(), icon: "doc")
+                }
+                .padding(.vertical, 4)
+            } header: {
+                if analysis != nil { Text("File") }
+            }
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+
 
             Section {
                 Button {
@@ -598,40 +608,86 @@ struct RecordingDetailView: View {
         .scrollContentBackground(.hidden)
     }
 
+    /// Semua bagian hasil analisis CSV: peta, statistik, chart, CVT, gaya
+    /// berkendara, distribusi, info kendaraan, catatan data.
     @ViewBuilder
-    private var summarySection: some View {
-        Section("Ringkasan") {
-            if let sum = summary, sum.rows > 0 {
-                summaryRow("RPM tertinggi", sum.maxRPM.map { String(format: "%.0f rpm", $0) })
-                summaryRow("Kecepatan tertinggi", sum.maxSpeed.map { String(format: "%.0f km/h", $0) })
-                summaryRow("Kecepatan rata-rata", sum.avgSpeed.map { String(format: "%.1f km/h", $0) })
-                summaryRow("Suhu mesin tertinggi", sum.maxCoolant.map { String(format: "%.0f °C", $0) })
-                summaryRow("Tegangan aki terendah", sum.minBattery.map { String(format: "%.1f V", $0) })
-                summaryRow("Jarak (GPS)", sum.gpsDistanceKm.map { String(format: "%.2f km", $0) }
-                           ?? (sum.gpsRows == 0 ? "Tidak ada data GPS" : nil))
-            } else if loadingSummary {
+    private var analysisSections: some View {
+        if let a = analysis, let playback, !a.samples.isEmpty {
+            if a.hasRoute {
+                Section {
+                    TripMapCard(analysis: a, playback: playback, accent: accent)
+                        .padding(.vertical, 6)
+                }
+                .listRowBackground(RecordingPalette.card)
+            }
+
+            Section {
+                TripStatsGrid(analysis: a)
+                    .padding(.vertical, 4)
+            }
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+
+            Section {
+                TripTimelineCharts(analysis: a, playback: playback)
+            } header: {
+                Text("Grafik")
+            } footer: {
+                Text("Geser mendatar atau tap di grafik untuk menggeser kursor — peta dan grafik lain ikut. Tekan ▶︎ untuk replay.")
+            }
+            .listRowBackground(RecordingPalette.card)
+
+            if a.cvtPoints.count >= 10 {
+                Section {
+                    TripCVTChart(analysis: a, playback: playback)
+                }
+                .listRowBackground(RecordingPalette.card)
+            }
+
+            if !a.modeSeconds.isEmpty {
+                Section {
+                    TripModeBreakdown(analysis: a)
+                }
+                .listRowBackground(RecordingPalette.card)
+            }
+
+            if !a.speedHistogram.isEmpty || !a.rpmHistogram.isEmpty {
+                Section {
+                    TripHistogramCard(analysis: a)
+                }
+                .listRowBackground(RecordingPalette.card)
+            }
+
+            if a.vin != nil || a.hasECU {
+                Section("Kendaraan") {
+                    TripVehicleInfo(analysis: a)
+                }
+                .listRowBackground(RecordingPalette.card)
+            }
+
+            if a.rowsBeforeECU + a.rowsAfterKeyOff + a.gpsRejected > 0 || a.fuelMl != nil
+                || a.speedoErrorPercent != nil {
+                Section("Catatan data") {
+                    TripDataNotes(analysis: a)
+                }
+                .listRowBackground(RecordingPalette.card)
+            }
+        } else if loadingSummary {
+            Section {
                 HStack {
                     ProgressView()
-                    Text("Menghitung…").foregroundStyle(.secondary)
+                    Text("Menganalisis rekaman…").foregroundStyle(.secondary)
                 }
-            } else {
+            }
+            .listRowBackground(RecordingPalette.card)
+        } else {
+            Section {
                 Text("Belum ada baris data — motor mungkin tidak terhubung selama rekaman.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            .listRowBackground(RecordingPalette.card)
         }
-        .listRowBackground(RecordingPalette.card)
-    }
-
-    private func summaryRow(_ title: String, _ value: String?) -> some View {
-        HStack {
-            Text(title).foregroundStyle(.secondary)
-            Spacer()
-            Text(value ?? "—")
-                .font(.body.monospacedDigit())
-                .foregroundStyle(.white)
-        }
-        .font(.subheadline)
     }
 
     private func tile(_ title: String, _ value: String, icon: String) -> some View {
@@ -655,14 +711,17 @@ struct RecordingDetailView: View {
         if s.lineCount > 0 { return s.lineCount.formatted() }
         // Rekaman versi lama tidak punya hitungan di indeks — pakai hasil
         // ringkasan CSV kalau sudah ada.
-        if let rows = summary?.rows { return rows.formatted() }
+        if let rows = analysis?.rawRows { return rows.formatted() }
         return "—"
     }
 
     private func loadSummary() async {
         guard let s = session, s.format == .csv, !isActive, let url = library.url(for: s) else { return }
         loadingSummary = true
-        summary = await Task.detached(priority: .userInitiated) { CSVSummary.load(from: url) }.value
+        let result = await Task.detached(priority: .userInitiated) { TripAnalysis.load(from: url) }.value
+        playback?.pause()
+        analysis = result
+        playback = result.map { TripPlayback(analysis: $0) }
         loadingSummary = false
     }
 }
