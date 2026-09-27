@@ -186,7 +186,6 @@ struct TripRouteMap: View {
                 }
             }
             .mapStyle(.standard(elevation: .realistic, emphasis: .muted, pointsOfInterest: .excludingAll))
-            .annotationTitles(.hidden)
             .onTapGesture { screenPoint in
                 // Tap di dekat rute → lompat ke waktu titik terdekat.
                 guard let c = proxy.convert(screenPoint, from: .local),
