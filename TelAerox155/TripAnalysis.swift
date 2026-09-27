@@ -582,6 +582,23 @@ nonisolated struct TripAnalysis: Sendable {
         }
     }
 
+    /// Rute tanpa `meters` pertama & terakhir (maks 20% panjang rute per
+    /// ujung, supaya rute pendek tidak habis terpotong) — buat kartu sosmed,
+    /// supaya titik start/finish (sering = rumah/kantor) tidak ketahuan.
+    static func trimmedForPrivacy(_ route: [RoutePoint], meters: Double) -> [RoutePoint] {
+        guard route.count > 2 else { return route }
+        var cum = [0.0]
+        for i in 1..<route.count {
+            cum.append(cum[i - 1] + haversine(route[i - 1].lat, route[i - 1].lon, route[i].lat, route[i].lon))
+        }
+        let total = cum.last ?? 0
+        let cut = min(meters, total * 0.2)
+        guard cut > 0 else { return route }
+        let kept = route.indices.filter { cum[$0] >= cut && cum[$0] <= total - cut }
+        guard let lo = kept.first, let hi = kept.last, hi > lo else { return route }
+        return Array(route[lo...hi])
+    }
+
     static func haversine(_ lat1: Double, _ lon1: Double, _ lat2: Double, _ lon2: Double) -> Double {
         let r = 6_371_000.0
         let dLat = (lat2 - lat1) * .pi / 180

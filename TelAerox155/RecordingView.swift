@@ -459,6 +459,7 @@ struct RecordingDetailView: View {
     /// Kursor waktu bersama peta/chart/replay — dibuat begitu analisis siap.
     @State private var playback: TripPlayback?
     @State private var loadingSummary = false
+    @State private var showShareCard = false
     @State private var shareURL: URL?
     @State private var confirmDelete = false
     @State private var showRename = false
@@ -493,6 +494,11 @@ struct RecordingDetailView: View {
         .sheet(item: Binding(get: { shareURL.map(ShareItem.init) },
                              set: { shareURL = $0?.url })) { item in
             ActivityShareSheet(activityItems: [item.url])
+        }
+        .sheet(isPresented: $showShareCard) {
+            if let a = analysis, let s = session {
+                TripShareCardSheet(analysis: a, session: s, accent: accent)
+            }
         }
         .alert("Ganti nama", isPresented: $showRename) {
             TextField("mis. Tes tanjakan Dago", text: $renameText)
@@ -624,6 +630,19 @@ struct RecordingDetailView: View {
             Section {
                 TripStatsGrid(analysis: a)
                     .padding(.vertical, 4)
+                Button {
+                    playback.pause()
+                    showShareCard = true
+                } label: {
+                    Label("Buat Kartu Sosmed", systemImage: "photo.on.rectangle.angled")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .foregroundStyle(.black)
+                        .background(accent, in: RoundedRectangle(cornerRadius: 14))
+                }
+                .buttonStyle(.plain)
+                .padding(.bottom, 4)
             }
             .listRowBackground(Color.clear)
             .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
