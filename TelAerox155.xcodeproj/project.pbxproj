@@ -284,6 +284,7 @@
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Terhubung ke Yamaha Aerox 155 (BCC) via Bluetooth untuk menampilkan telemetri.";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Merekam koordinat GPS pada CSV rekaman sesi (opsional), termasuk saat app diminimize.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Merekam koordinat GPS pada CSV rekaman sesi (opsional).";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Menyimpan gambar kartu rekaman perjalanan ke Foto.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -337,6 +338,7 @@
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Terhubung ke Yamaha Aerox 155 (BCC) via Bluetooth untuk menampilkan telemetri.";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Merekam koordinat GPS pada CSV rekaman sesi (opsional), termasuk saat app diminimize.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Merekam koordinat GPS pada CSV rekaman sesi (opsional).";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Menyimpan gambar kartu rekaman perjalanan ke Foto.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
