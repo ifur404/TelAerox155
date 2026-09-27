@@ -23,22 +23,64 @@ import CoreLocation
 /// SWIFT_DEFAULT_ACTOR_ISOLATION=MainActor, lihat catatan di AGENTS.md/
 /// YConnectClient.swift), jadi tidak butuh lock terpisah.
 final class SessionRecorder: ObservableObject {
-    enum Format: String, CaseIterable, Identifiable {
-        case bleRaw = "BLE Raw"
-        case csv = "CSV per detik"
+    /// rawValue disimpan di indeks riwayat (`RecordingLibrary`) — jangan
+    /// diubah; teks buat UI ada di `title`/`subtitle`.
+    /// nonisolated: ikut di-encode/decode bareng `RecordingSession`.
+    nonisolated enum Format: String, CaseIterable, Identifiable, Codable, Sendable {
+        case csv
+        case bleRaw
         var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .csv: return "Data Sensor"
+            case .bleRaw: return "Frame BLE Mentah"
+            }
+        }
+
+        var subtitle: String {
+            switch self {
+            case .csv: return "RPM, kecepatan, suhu, aki, GPS — 1 baris/detik (CSV). Bisa dibuka di Excel/Sheets."
+            case .bleRaw: return "Semua frame TX/RX mentah (TXT) buat analisa protokol. Kredensial & VIN disensor."
+            }
+        }
+
+        var icon: String {
+            switch self {
+            case .csv: return "chart.xyaxis.line"
+            case .bleRaw: return "antenna.radiowaves.left.and.right"
+            }
+        }
+
+        var fileExtension: String { self == .csv ? "csv" : "txt" }
+
+        init?(fileExtension ext: String) {
+            switch ext.lowercased() {
+            case "csv": self = .csv
+            case "txt": self = .bleRaw
+            default: return nil
+            }
+        }
     }
 
+    /// Riwayat permanen semua sesi — lihat `RecordingLibrary`.
+    let library = RecordingLibrary()
+
     @Published private(set) var isRecording = false
-    @Published private(set) var format: Format = .bleRaw
+    @Published private(set) var format: Format = .csv
     @Published private(set) var fileURL: URL?
     @Published private(set) var bytesWritten: Int = 0
+    /// Baris data yang sudah ditulis (baris CSV tanpa header / frame BLE Raw).
+    @Published private(set) var lineCount: Int = 0
     @Published private(set) var startedAt: Date?
     /// Terisi kalau rekaman terakhir berhenti KARENA limit (bukan ditekan
     /// user) — ditampilkan sebagai pesan info di UI.
     @Published private(set) var stopReason: String?
 
     private var fileHandle: FileHandle?
+    /// Kapan metadata sesi aktif terakhir disimpan ke indeks — di-throttle
+    /// (bukan tiap baris) supaya tidak nulis JSON ~20x/detik saat BLE Raw.
+    private var lastIndexSync = Date.distantPast
 
     // Limit keamanan (lihat dokblok di atas) — bukan angka resmi dari mana
     // pun, dipilih supaya cukup longgar buat satu sesi ujicoba/riding panjang
@@ -63,9 +105,21 @@ final class SessionRecorder: ObservableObject {
     /// dibaca kalau beberapa kali rekam dalam satu sesi ujicoba di motor.
     static func makeFileName(format: Format) -> String {
         let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        let ext = format == .csv ? "csv" : "txt"
-        return "telaerox-rec_\(f.string(from: Date())).\(ext)"
+        return "\(RecordingLibrary.filePrefix)\(f.string(from: Date())).\(format.fileExtension)"
+    }
+
+    /// Simpan metadata sesi aktif ke indeks riwayat. `endedAt` nil selama
+    /// masih merekam — kalau app di-kill sistem di tengah jalan, entri ini
+    /// yang membuat sesinya tetap muncul (dan ditandai) di riwayat.
+    private func syncIndex(endedAt: Date? = nil) {
+        guard let url = fileURL, let started = startedAt else { return }
+        lastIndexSync = Date()
+        library.upsert(RecordingSession(fileName: url.lastPathComponent, format: format,
+                                        startedAt: started, endedAt: endedAt,
+                                        bytes: bytesWritten, lineCount: lineCount,
+                                        stopReason: endedAt == nil ? nil : stopReason, title: nil))
     }
 
     /// Ditulis ke Documents (bukan tmp/) supaya bertahan kalau app disuspend
@@ -90,12 +144,14 @@ final class SessionRecorder: ObservableObject {
         self.fileHandle = handle
         self.fileURL = url
         self.bytesWritten = 0
+        self.lineCount = 0
         self.startedAt = Date()
         self.stopReason = nil
         self.isRecording = true
         if format == .csv {
-            write(Self.csvHeader + "\n")
+            write(Self.csvHeader + "\n", countsAsLine: false)
         }
+        syncIndex()
         return url
     }
 
@@ -108,9 +164,10 @@ final class SessionRecorder: ObservableObject {
         fileHandle = nil
         isRecording = false
         stopReason = reason
+        syncIndex(endedAt: Date())
     }
 
-    private func write(_ text: String) {
+    private func write(_ text: String, countsAsLine: Bool = true) {
         guard let data = text.data(using: .utf8), let handle = fileHandle else { return }
         // write(contentsOf:) (bukan write(_:) lama) supaya kegagalan nulis
         // (mis. storage penuh/file terkunci) jadi Error yang bisa ditangani,
@@ -123,6 +180,8 @@ final class SessionRecorder: ObservableObject {
             return
         }
         bytesWritten += data.count
+        if countsAsLine { lineCount += 1 }
+        if Date().timeIntervalSince(lastIndexSync) >= 10 { syncIndex() }
         enforceLimitsIfNeeded()
     }
 

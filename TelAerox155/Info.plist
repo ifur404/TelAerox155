@@ -14,5 +14,12 @@
 		<string>bluetooth-central</string>
 		<string>location</string>
 	</array>
+	<!-- Folder Documents (tempat file rekaman sesi) tampil di app Files ›
+	     Di iPhone Saya › TelAerox — supaya rekaman bisa diakses/dibackup
+	     langsung, tidak cuma lewat share sheet di dalam app. -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 </dict>
 </plist>
