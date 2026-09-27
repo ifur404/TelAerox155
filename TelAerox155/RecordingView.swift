@@ -865,14 +865,16 @@ enum RecordingPalette {
 
 enum RecordingFormat {
     /// 00:42 / 12:03 / 1:02:03
-    static func clock(_ t: TimeInterval) -> String {
+    // nonisolated: formatter murni tanpa state MainActor, supaya bisa dipakai
+    // sebagai function reference (mis. Optional.map) dari konteks nonisolated.
+    nonisolated static func clock(_ t: TimeInterval) -> String {
         let s = max(0, Int(t))
         let h = s / 3600, m = (s % 3600) / 60, sec = s % 60
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, sec) : String(format: "%02d:%02d", m, sec)
     }
 
     /// "1j 05m" / "5m 12d" / "42d"
-    static func duration(_ t: TimeInterval) -> String {
+    nonisolated static func duration(_ t: TimeInterval) -> String {
         let s = max(0, Int(t))
         let h = s / 3600, m = (s % 3600) / 60, sec = s % 60
         if h > 0 { return String(format: "%dj %02dm", h, m) }
@@ -880,7 +882,7 @@ enum RecordingFormat {
         return "\(sec)d"
     }
 
-    static func size(_ bytes: Int) -> String {
+    nonisolated static func size(_ bytes: Int) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
 
