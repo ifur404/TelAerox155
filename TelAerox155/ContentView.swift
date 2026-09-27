@@ -10,6 +10,7 @@ struct ContentView: View {
     // pernah menyimpan pilihan lain tidak ikut berubah (lihat TelemetryStore).
     @AppStorage("keepAlivePolicy") private var keepAlivePolicyRaw: String = KeepAlivePolicy.full.rawValue
     @State private var showLogSheet = false
+    @State private var showRecordSheet = false
     @State private var showAuthCopiedToast = false
     // Kartu sensor yang di-tap → tampilkan penjelasan (SensorCatalog). key
     // di sini merujuk ke MetricValue.key / MappingItem.key yang sama dipakai
@@ -45,7 +46,11 @@ struct ContentView: View {
             Text(store.errorMessage ?? "Terjadi kesalahan")
         }
         .sheet(isPresented: $showLogSheet) {
-            LogSheetView(store: store, recorder: store.recorder, location: store.location, accent: accent)
+            LogSheetView(store: store, accent: accent)
+        }
+        .sheet(isPresented: $showRecordSheet) {
+            RecordingView(store: store, recorder: store.recorder, library: store.recorder.library,
+                          location: store.location, accent: accent)
         }
         .sheet(item: Binding(
             get: { selectedSensorKey.map(SensorSheetItem.init) },
@@ -69,6 +74,7 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                RecordHeaderButton(recorder: store.recorder) { showRecordSheet = true }
                 logButton
                 connectButton
             }
@@ -618,12 +624,8 @@ struct ContentView: View {
 /// kegagalannya senyap total (completion handler membuang `Result`).
 struct LogSheetView: View {
     @ObservedObject var store: TelemetryStore
-    @ObservedObject var recorder: SessionRecorder
-    @ObservedObject var location: LocationProvider
     let accent: Color
     @Environment(\.dismiss) private var dismiss
-
-    @State private var recordFormat: SessionRecorder.Format = .bleRaw
 
     // Binding lokal ke key yang sama dengan TelemetryStore.diagLogEnabled —
     // pola ini sudah dipakai buat keepAlivePolicy (lihat ContentView.keepAlivePicker):
@@ -677,7 +679,10 @@ struct LogSheetView: View {
                 .tint(accent)
                 .padding(.horizontal, 24)
 
-                recordingSection
+                Label("Mau merekam perjalanan (RPM, kecepatan, GPS) ke file? Pakai tombol rekam ⏺ di layar utama.",
+                      systemImage: "record.circle")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                     .padding(.horizontal, 24)
 
                 Divider()
@@ -770,154 +775,6 @@ struct LogSheetView: View {
         }
     }
 
-    /// Rekaman sesi ke FILE (bukan buffer memori) — beda dari toggle "Log
-    /// Diagnostik" di atas: dua format (BLE Raw / CSV per detik), ditulis
-    /// langsung ke disk (aman buat sesi panjang termasuk di background), dan
-    /// otomatis berhenti kalau kena limit ukuran/durasi (lihat SessionRecorder).
-    private var recordingSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Rekaman Sesi")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.white)
-
-            if recorder.isRecording {
-                TimelineView(.periodic(from: recorder.startedAt ?? .now, by: 1)) { context in
-                    let elapsed = Int(context.date.timeIntervalSince(recorder.startedAt ?? context.date))
-                    HStack {
-                        Circle().fill(.red).frame(width: 8, height: 8)
-                        Text("Merekam \(recorder.format.rawValue) — \(elapsed / 60)m \(elapsed % 60)d — \(formattedSize(recorder.bytesWritten))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                    }
-                }
-                if recorder.format == .csv {
-                    gpsStatusRow
-                }
-                Button(role: .destructive) {
-                    recorder.stop()
-                } label: {
-                    Label("Stop Rekam", systemImage: "stop.circle.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-            } else {
-                Picker("Format", selection: $recordFormat) {
-                    ForEach(SessionRecorder.Format.allCases) { f in
-                        Text(f.rawValue).tag(f)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                Text("BLE Raw: semua frame TX/RX mentah (kredensial/VIN disensor). CSV: satu baris per detik, nilai terdecode + header (termasuk GPS). Otomatis berhenti di 20 MB atau 6 jam. Tetap berjalan walau layar dikunci atau app diminimize, selama sesi masih terhubung — untuk kolom GPS di CSV tetap terisi saat terkunci, pilih izin lokasi \"Selalu\" (bukan cuma \"Saat Digunakan\").")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-
-                if recordFormat == .csv {
-                    gpsStatusRow
-                }
-
-                Button {
-                    _ = recorder.start(format: recordFormat)
-                } label: {
-                    Label("Mulai Rekam", systemImage: "record.circle")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .tint(.red)
-
-                if let url = recorder.fileURL {
-                    if let reason = recorder.stopReason {
-                        Text(reason)
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
-                    }
-                    HStack {
-                        Text(url.lastPathComponent)
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer()
-                        Button {
-                            shareURL = url
-                        } label: {
-                            Label("Bagikan", systemImage: "square.and.arrow.up")
-                                .font(.caption)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(accent)
-                    }
-                }
-            }
-        }
-    }
-
-    private func formattedSize(_ bytes: Int) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
-    }
-
-    /// Status GPS buat kolom gps_* di CSV — GPS baru benar-benar nyala saat
-    /// rekaman CSV berjalan (lihat TelemetryStore.bindRecorderToLocation),
-    /// jadi baris ini juga jadi indikator "kenapa kolom gps_* di CSV kosong"
-    /// kalau izin belum diberikan atau belum ada fix.
-    private var gpsStatusRow: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "location.fill")
-                .font(.caption2)
-                .foregroundStyle(gpsColor)
-            Text(gpsStatusText)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Spacer()
-            if location.authorizationStatus == .denied || location.authorizationStatus == .restricted {
-                Button("Buka Pengaturan") {
-                    #if canImport(UIKit)
-                    if let url = URL(string: UIApplication.openSettingsURLString) {
-                        UIApplication.shared.open(url)
-                    }
-                    #endif
-                }
-                .font(.caption2)
-                .foregroundStyle(accent)
-            }
-        }
-    }
-
-    private var gpsColor: Color {
-        switch location.authorizationStatus {
-        case .authorizedAlways, .authorizedWhenInUse:
-            return location.lastLocation != nil ? .green : .orange
-        case .denied, .restricted:
-            return .red
-        case .notDetermined:
-            return .secondary
-        @unknown default:
-            return .secondary
-        }
-    }
-
-    private var gpsStatusText: String {
-        switch location.authorizationStatus {
-        case .denied, .restricted:
-            return "Izin lokasi ditolak — kolom gps_* akan kosong."
-        case .notDetermined:
-            return "Izin lokasi akan diminta saat rekaman dimulai."
-        case .authorizedWhenInUse:
-            // Dengan izin ini pun GPS tetap lanjut di background SELAMA update-nya
-            // dimulai saat app di foreground (persis yang dilakukan tombol "Mulai
-            // Rekam" — lihat TelemetryStore.bindRecorderToLocation). Batasannya
-            // cuma: kalau app baru dibuka lagi dari kondisi benar2 mati/belum
-            // pernah start GPS, iOS tidak izinkan mulai dari background.
-            return (location.lastLocation != nil ? "GPS aktif, ada fix." : "GPS aktif, menunggu fix pertama…")
-                + " Izin \"Saat Digunakan\" — pilih \"Selalu\" di Pengaturan kalau mau lebih pasti."
-        case .authorizedAlways:
-            return location.lastLocation != nil ? "GPS aktif, ada fix." : "GPS aktif, menunggu fix pertama…"
-        @unknown default:
-            return ""
-        }
-    }
-
     /// "telaerox-log_2026-09-22_20-14-05" — cukup unik + gampang dibaca kalau
     /// beberapa kali export dalam satu sesi ujicoba di motor.
     private static func makeLogFileName() -> String {
@@ -952,7 +809,7 @@ struct LogSheetView: View {
 
 /// Wrapper `Identifiable` supaya `URL` (yang bukan Identifiable) bisa dipakai
 /// dengan `.sheet(item:)`.
-private struct ShareItem: Identifiable {
+struct ShareItem: Identifiable {
     let url: URL
     var id: URL { url }
 }
