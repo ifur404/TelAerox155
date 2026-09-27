@@ -458,7 +458,10 @@ struct RecordingDetailView: View {
     @State private var analysis: TripAnalysis?
     /// Kursor waktu bersama peta/chart/replay — dibuat begitu analisis siap.
     @State private var playback: TripPlayback?
-    @State private var loadingSummary = false
+    /// Mulai `true` supaya frame pertama langsung menampilkan indikator
+    /// loading — kalau `false`, sebelum `.task` sempat jalan layar sempat
+    /// berkedip "Belum ada baris data" padahal file-nya belum dibaca.
+    @State private var loadingSummary = true
     @State private var showShareCard = false
     @State private var shareURL: URL?
     @State private var confirmDelete = false
@@ -693,17 +696,37 @@ struct RecordingDetailView: View {
             }
         } else if loadingSummary {
             Section {
-                HStack {
+                VStack(spacing: 12) {
                     ProgressView()
-                    Text("Menganalisis rekaman…").foregroundStyle(.secondary)
+                        .controlSize(.large)
+                        .tint(accent)
+                    Text("Menganalisis rekaman…")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                    Text(loadingHint)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                 }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 28)
             }
             .listRowBackground(RecordingPalette.card)
         } else {
             Section {
-                Text("Belum ada baris data — motor mungkin tidak terhubung selama rekaman.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Belum ada baris data — motor mungkin tidak terhubung selama rekaman.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button {
+                        Task { await loadSummary() }
+                    } label: {
+                        Label("Muat ulang", systemImage: "arrow.clockwise")
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .tint(accent)
+                }
+                .padding(.vertical, 4)
             }
             .listRowBackground(RecordingPalette.card)
         }
@@ -734,10 +757,26 @@ struct RecordingDetailView: View {
         return "—"
     }
 
+    /// Keterangan di bawah spinner — rekaman panjang (puluhan MB) butuh
+    /// beberapa detik untuk di-parse, jadi kasih tahu ukurannya.
+    private var loadingHint: String {
+        guard let s = session, s.bytes > 0 else { return "Membaca file log…" }
+        return "Membaca \(RecordingFormat.size(s.bytes)) data log. Rekaman panjang bisa butuh beberapa detik."
+    }
+
     private func loadSummary() async {
-        guard let s = session, s.format == .csv, !isActive, let url = library.url(for: s) else { return }
+        guard let s = session, s.format == .csv, !isActive, let url = library.url(for: s) else {
+            loadingSummary = false
+            return
+        }
         loadingSummary = true
         let result = await Task.detached(priority: .userInitiated) { TripAnalysis.load(from: url) }.value
+        // `.task(id:)` membatalkan task lama saat `endedAt` berubah (mis.
+        // `library.reload()` menandai sesi yang terhenti) lalu menjalankan
+        // yang baru. Task.detached tidak ikut batal, jadi hasil task lama
+        // tetap datang belakangan — abaikan supaya tidak mematikan spinner
+        // milik load yang baru / menimpa hasilnya dengan data basi.
+        guard !Task.isCancelled else { return }
         playback?.pause()
         analysis = result
         playback = result.map { TripPlayback(analysis: $0) }
