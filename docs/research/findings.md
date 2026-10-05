@@ -131,7 +131,7 @@ Sent to CCU on NUS TX characteristic after INITIALIZED.
 | 2-3 | 2 | `0x7F00` (LE) |
 | 4 | 1 | `0x35` (53) |
 | 5-18 | 14 | **CCUID**, ASCII (from advertisement name, last 14 chars) |
-| 19-24 | 6 | **passKey**, ASCII (from cloud, see §8) |
+| 19-24 | 6 | **passKey**, ASCII (QR extraction or cloud lookup; see §8) |
 | 25-56 | 32 | **phoneUUID**, ASCII (app-generated random UUID persisted in DataStore) |
 | 57 | 1 | updateBondingFlag: `1` = first connection, `0` = bonded |
 | 58 | 1 | counter (0..255, incremented **after** each send, wraps 255→0) |
@@ -215,26 +215,41 @@ Other SCCU1 sample items (engine block, offsets verified in mapping JSON):
 
 ---
 
-## 8. passKey provenance (VIN → auth) — CONCLUDED [VERIFIED]
+## 8. passKey provenance — QR local extraction and VIN lookup
 
-```
-[App] VIN (manual input or QR/MLKit PROTO .md)
-  → GraphQL mutation CreateUserVehicleMutation (VIN)
-  → Yamaha cloud
-  → response contains passKey (6-digit)
-  → stored in ExploredVehicleUIModel / McConnectModel.bleModel.passKey
-  → DeviceConnectionUseCaseImpl builds McConnectDeviceSetting.Bluetooth(uuid, ccuId, passKey)
-      [VERIFIED MotoconClientImpl.java:450]
-  → SCCUBLEConnection sets ccuid/passKey/phoneUuid/firstConnectionFlag on model
-      [VERIFIED p013h/a.java]
-  → 0xAA auth frame (60 B) to CCU
-  → CCU replies StartProcessing (0x5A) startProcessingFlag=1
+Updated 2026-10-05. The earlier cloud-only conclusion is withdrawn.
+See [the pairing follow-up](04-apk-qr-pairing.md) for source references and
+provenance limits: existing decompiled Java was inspected, relevant identifiers
+were checked in the supplied APK, but the complete decompile was not verified
+byte-for-byte against that APK. No real QR or new BLE pairing was tested.
+
+The inspected handlers have separate paths:
+
+```text
+CCU QR (24 characters)
+  → local character permutation
+  → compare decoded prefix against selected CCU ID
+  → extract six-character passKey
+
+Manual VIN confirmation
+  → compare entered characters with VIN.dropLast(2).takeLast(4)
+  → GET pairing_info/{full VIN}, using a session JWT
+  → response contains ccuid and passKey
+
+passKey → ExploredVehicleUIModel / Bluetooth connection settings
+  → existing 0xAA authentication frame
 ```
 
-- **passKey is server-derived** (VIN → passKey). The APK contains **no** algorithm/node to derive it locally [VERIFIED: no passKey crypto besides sending; GraphQL wrapper `/feature_pairing/data/…/UserVehicleRepositoryImpl` uses `GetMcVehicleInfoQuery`/`CreateUserVehicleMutation`]. So a fresh iOS app must either obtain passKey from the same cloud API or capture it once via a paired install (a debug read-only approach: sniff the auth frame after VIN entry).
-- phoneUUID is per-install random UUID persisted in DataStore (`AppDataStore.setPhoneUUID`) [VERIFIED]; reused across sessions; it does not need to match a prior app (CCU accepts any formatted UUID).
-- The CCU stores the bond; after first success, updateBondingFlag=0 and connection proceeds faster.
-- VIN also separated from BLE: pairing screen shows confirm dialog; read of the two GraphQL nodes in `feature_pairing/data/**` shows no local passKey derivation.
+- The QR handler extracts credentials locally; it does not merely fill a VIN.
+  This does not prove that the official app's entire onboarding works offline.
+- The manual screen already has the full VIN. Its upstream source still needs
+  tracing; the four entered characters cannot independently supply a full VIN.
+- GraphQL operations also exist, but are not the direct passKey lookup in the
+  inspected manual handler. A server response does not establish how the
+  server derives or stores a passKey.
+- Earlier research records a per-install phoneUUID persisted in DataStore
+  (`AppDataStore.setPhoneUUID`). Acceptance of a newly generated UUID together
+  with QR-derived credentials still requires a motorcycle test.
 
 ---
 
@@ -245,7 +260,7 @@ Other SCCU1 sample items (engine block, offsets verified in mapping JSON):
 - Frame parsing fully self-contained (bit slicing + mapping JSON).
 
 **Cloud (needs internet / account):**
-- **passKey for auth** (VIN → passKey API).
+- **Manual VIN passKey lookup** (REST with session token); QR extraction itself is local, subject to the validation limits in §8.
 - Per-CCUID mapping file (S3) — but with the bundled `Sample_SCCU1_MappingFile.json` the parser can already decode any SCCU1; cloud file is only a refresh/edge-case mechanism. **Caveat**: mapping offsets for a specific Aerox could in principle differ per CCUID, so the sample is an approximation until a live capture confirms exact byteNo.
 - Riding log lookback / trip records / vehicle-tracking `/v1/…` REST + GraphQL (`feature_lookback`), analysis service, oil-change advisories, theft alerts — all cloud.
 
@@ -255,18 +270,18 @@ Other SCCU1 sample items (engine block, offsets verified in mapping JSON):
 
 1. Scan for names starting `YSCCU_` or `YCCU_`; take last 14 chars as CCUID.
 2. Connect GATT to `6E400001-B5A3-F393-E0A9-E50E24DCCA9E`; request MTU 512; enable notifications on `6E400003…`; write on `6E400002…` (no-response).
-3. Obtain passKey for the VIN via Yamaha cloud VIN API (or: while developing, sniff the 60-byte auth frame from an existing Android pairing capture).
+3. Obtain credentials from a compatible CCU QR or the authenticated VIN lookup (§8). Validate the QR format and CCU identity before treating this as a working onboarding path; the current iOS app still uses local JSON credentials.
 4. Write 60-byte auth frame (table §6.1). Expect 8-byte StartProcessing; retry on mismatch. Counter starts anywhere; checksum included.
 5. Read notifications; group by type byte; validate checksum; parse per §5/§7 using the sample mapping JSON.
 6. Record 0x55 frame: engine + odometer (frame[41..44]/10 km). Frame 0x59 = FFD(byte3 16..<90)/Market(≥96). 0x5B = common counters.
-7. Expect nothing to be sent back to the motorcycle other than the auth frame — the CCU pushes stream data on its own schedule. **Never send other writes.**
+7. Keep motorcycle writes within `AGENTS.md`: authentication and periodic `0xA6` keep-alive according to `KeepAlivePolicy`. Do not add diagnostic requests or vehicle-control writes.
 
 ---
 
 ## 11. Open questions / risks
 
 - **Exact per-CCUID mapping file** for a given Aerox is not in the APK (S3 download). Sample bundled file is the best static equivalent; verify live a few ByteNo values before trusting all units.
-- **passKey cloud derivation** invisible to static RE; emulate by VIN → GraphQL call or capture.
+- **Pairing validation:** test a real owner-provided QR locally, confirm CCU matching and auth acceptance; trace the full-VIN source and account session flow for manual pairing. Server-side passKey derivation and credential lifetime remain unknown.
 - **PairIP-wrapped methods** (part of `motoconsdkv4/a.java`, `b.java`, some `SCCUBLEConnection` internals) returned opaque `null` in jadx — those specific code paths (bond sequence, some counters) remain **unreadable** and were classified [INFERRED] where relied on (none critical to frame layout, which is fully verified).
 - Counter echo: RX counter is consumed monotonically; a custom client that only reads can ignore it.
 

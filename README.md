@@ -112,3 +112,9 @@ serta downsampling rute panjang. Tidak menulis ke Documents pengguna.
 
 `TelAerox155/secrets.local.json` (kalau ada) berisi kredensial motor lokal dan
 sudah di-`.gitignore` — jangan pernah di-commit atau dibagikan.
+
+Aplikasi saat ini masih memakai file JSON tersebut. Pairing lewat QR dan
+penyimpanan Keychain belum diimplementasikan. Analisis statis menemukan
+jalur QR CCU yang mengekstrak `passKey` lokal, tetapi belum diuji dengan QR
+asli atau motor. Lihat [rencana pairing dan langkah validasi](docs/research/03-auth-pairing-input.md)
+serta [bukti analisis APK](docs/research/04-apk-qr-pairing.md).
