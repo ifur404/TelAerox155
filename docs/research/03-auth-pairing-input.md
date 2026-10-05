@@ -5,8 +5,12 @@ pasar Indonesia). Client tetap read-only sesuai [AGENTS.md](../../AGENTS.md).
 
 ## 1. Status saat ini
 
-TelAerox155 masih membaca kredensial dari `secrets.local.json`. Onboarding
-QR, penyimpanan Keychain, dan login Yamaha **belum diimplementasikan**.
+Alur aplikasi kini: pilih perangkat Bluetooth → QR / pilihan 4 digit → coba
+auth → simpan file privat `secrets.local.json` hanya setelah motor menerima
+auth. Jalur QR sudah diimplementasikan; jalur 4 digit **belum berfungsi** karena
+integrasi sesi Yamaha belum tersedia. Tidak ada impor JSON atau penyimpanan
+kredensial sebelum percobaan koneksi. Decoder dan penyimpanan diuji dengan
+data buatan, belum QR/motor asli.
 
 Pembacaan hasil decompile menemukan dua jalur berbeda. Bukti sumber,
 aturan decoding, hash APK, dan batas verifikasinya ada di
@@ -38,13 +42,14 @@ App resmi juga sudah mempunyai kendaraan terpilih saat memeriksa QR.
 Rancangan untuk aplikasi kita:
 
 ```text
-Tambah Motor → scan QR → decode lokal → simpan di Keychain
-  → scan BLE → cocokkan identitas CCU → autentikasi → telemetri
+Scan Bluetooth → pilih motor → scan QR → cocokkan CCU → coba autentikasi
+  → 0x5A accepted → buat secrets.local.json privat → paired / telemetri
 ```
 
-Urutan QR sebelum scan BLE adalah rancangan TelAerox155, belum perilaku yang
-teruji di motor. Kredensial tersimpan belum boleh dianggap berhasil pairing
-sebelum CCU menerima autentikasi.
+Kredensial calon pairing hanya berada di memori sampai CCU menerima auth.
+Koneksi ditargetkan ke identifier Bluetooth perangkat yang dipilih. Jika
+pairing gagal/batal/timeout, file lama dipertahankan. File baru dibuat secara
+atomik setelah auth diterima; jika penulisan gagal, UI tidak menyatakan paired.
 
 ## 3. Jalur input nomor rangka
 
@@ -72,10 +77,10 @@ Keberadaan GraphQL dalam APK tidak berarti jalur ini memakai GraphQL.
 2. **Cocokkan identitas motor.** Cocokkan field CCU dengan hasil scan BLE
    melalui normalisasi yang dipakai client. Sukses decoding saja belum
    membuktikan QR milik perangkat yang dipilih.
-3. **Implementasi setelah format cocok.** Tambahkan scanner QR, validasi,
-   Keychain, dan onboarding. Simpan phoneUUID secara konsisten; gunakan auth
-   client yang sudah ada. Uji decoder memakai data buatan, termasuk QR
-   salah panjang dan CCU tidak cocok.
+3. **Validasi implementasi di iPhone.** Scanner Bluetooth, QR, validasi, dan
+   penyimpanan setelah auth sudah dibuat. Uji izin Bluetooth/kamera, perangkat
+   salah, timeout, pembatalan, serta memastikan tidak ada file sebelum auth
+   diterima. phoneUUID disimpan bersama kredensial untuk koneksi berikutnya.
 4. **Build dan uji di motor sendiri.** Pastikan build tanpa error/warning
    baru, CCU menerima auth, telemetri masuk, dan koneksi berikutnya memakai
    kredensial tersimpan tanpa JSON atau scan QR ulang. Hasil nyata dicatat
@@ -87,8 +92,9 @@ sebagai passKey atau mencoba kombinasi kredensial.
 
 ## 5. Penyimpanan dan batas keamanan
 
-- Saat ini kredensial masih dari file lokal yang diabaikan Git. Keychain
-  adalah target implementasi, bukan fitur yang sudah tersedia.
+- Kredensial koneksi dibaca dari file privat Application Support/Pairing.
+  Direktori dikecualikan dari backup dan file memakai proteksi iOS. JSON
+  repo/bundle tidak dibaca untuk proses pairing baru.
 - Jangan commit, mencetak, atau membagikan isi `secrets.local.json`.
   Perlakukan QR yang membawa kredensial dengan perlindungan yang sama.
 - Rencana ini tidak menambah write ke motor. Tetap hanya frame auth sesuai

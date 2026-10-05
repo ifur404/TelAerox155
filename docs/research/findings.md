@@ -270,7 +270,7 @@ passKey → ExploredVehicleUIModel / Bluetooth connection settings
 
 1. Scan for names starting `YSCCU_` or `YCCU_`; take last 14 chars as CCUID.
 2. Connect GATT to `6E400001-B5A3-F393-E0A9-E50E24DCCA9E`; request MTU 512; enable notifications on `6E400003…`; write on `6E400002…` (no-response).
-3. Obtain credentials from a compatible CCU QR or the authenticated VIN lookup (§8). Validate the QR format and CCU identity before treating this as a working onboarding path; the current iOS app still uses local JSON credentials.
+3. Obtain credentials from a compatible CCU QR or the authenticated VIN lookup (§8). Validate the QR format and CCU identity before treating this as a working onboarding path; the iOS app now selects a nearby BLE device, validates its QR, attempts auth, then writes a private secrets.local.json only after acceptance. Manual VIN account integration and real-device validation remain pending.
 4. Write 60-byte auth frame (table §6.1). Expect 8-byte StartProcessing; retry on mismatch. Counter starts anywhere; checksum included.
 5. Read notifications; group by type byte; validate checksum; parse per §5/§7 using the sample mapping JSON.
 6. Record 0x55 frame: engine + odometer (frame[41..44]/10 km). Frame 0x59 = FFD(byte3 16..<90)/Market(≥96). 0x5B = common counters.

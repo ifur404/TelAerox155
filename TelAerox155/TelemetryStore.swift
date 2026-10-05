@@ -33,8 +33,17 @@ public struct DiscoveredDevice: Identifiable, Equatable {
 // CBCentralManager lalu memanggil delegate-nya di main queue, yang sama dengan
 // MainActor default executor. Kalau nanti queue custom dipakai, method delegate
 // di bawah wajib di-nonisolated + hop manual ke MainActor.
+enum PairingAttemptState: Equatable {
+    case idle, connecting, paired, failed(String)
+}
+
 @MainActor
 final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
+
+    @Published private(set) var hasPairing = false
+    @Published private(set) var pairingAttempt: PairingAttemptState = .idle
+    private var pendingPairing: PairedMotorcycle?
+    private var pairingTimeout: Task<Void, Never>?
 
     @Published var state: ClientState = .poweredOff
     @Published var snapshot = TelemetrySnapshot()
@@ -76,6 +85,8 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
 
     override init() {
         super.init()
+        do { hasPairing = try PairingFile.load() != nil }
+        catch { errorMessage = "Gagal membaca file pairing. Buka kunci iPhone dan coba lagi." }
         bindRecorderToLocation()
         observeAppLifecycle()
     }
@@ -109,55 +120,96 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         set { keepAlivePolicyRaw = newValue.rawValue }
     }
 
-    func connect() {
-        // B1: sebelumnya kalau client != nil (mis. sesi lama gagal/terputus dan
-        // belum di-disconnect() manual), tombol "Hubungkan" diam total — guard
-        // ini menolak membuat client baru. Sekarang bersihkan dulu sesi lama.
-        if client != nil {
-            client?.stop()
-            client = nil
+    func beginPairing(_ credentials: Credentials, device: NearbyPairingDevice) throws {
+        guard !isActive && !isConnecting && pairingAttempt != .connecting else { return }
+        try PairingDecoder.validate(credentials)
+        guard let ccuid = device.ccuid, credentials.ccuid == ccuid else {
+            throw PairingError.wrongMotorcycle
         }
+        pendingPairing = PairedMotorcycle(credentials: credentials, peripheralID: device.id)
+        pairingAttempt = .connecting
+        state = .connecting
+        openConnection(credentials, peripheralID: device.id, pairing: true)
+        // Membatasi scan dan connect yang bisa pending tanpa batas di CoreBluetooth.
+        pairingTimeout?.cancel()
+        pairingTimeout = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(30))
+            guard !Task.isCancelled, let self, self.pendingPairing != nil else { return }
+            self.failPairing("Motor belum menerima autentikasi. Dekatkan iPhone, pastikan kontak menyala, lalu coba lagi.")
+        }
+    }
+
+    func resetPairingAttempt() {
+        guard pairingAttempt != .connecting else { return }
+        pairingAttempt = .idle
+    }
+
+    func cancelPairing() {
+        guard pendingPairing != nil else { return }
+        disconnect()
+        pairingAttempt = .idle
+    }
+
+    private func failPairing(_ message: String) {
+        disconnect()
+        pairingAttempt = .failed(message)
+    }
+
+    func forgetPairing() throws {
+        guard !isActive && !isConnecting else { throw PairingError.storage }
+        try PairingFile.remove()
+        hasPairing = false
+        pairingAttempt = .idle
+    }
+
+    func connect() {
+        do {
+            guard let motor = try PairingFile.load() else {
+                hasPairing = false
+                errorMessage = "Pilih motor dan selesaikan pairing terlebih dahulu."
+                return
+            }
+            hasPairing = true
+            openConnection(motor.credentials, peripheralID: motor.peripheralID, pairing: false)
+        } catch {
+            errorMessage = "Gagal membaca file pairing. Buka kunci iPhone dan coba lagi."
+        }
+    }
+
+    private func openConnection(_ credentials: Credentials, peripheralID: UUID, pairing: Bool) {
+        client?.stop()
+        client = nil
+        snapshot = TelemetrySnapshot()
+        vin = nil
+        modelCode = nil
         errorMessage = nil
         discovered.removeAll()
         authTrace.removeAll()
-        recorder.appendRaw(.info, "=== connect() dipanggil, keepAlivePolicy=\(keepAlivePolicy.rawValue) ===")
         startRecordingTimer()
-        do {
-            guard let url = Bundle.main.url(forResource: "secrets.local", withExtension: "json") else {
-                errorMessage = "secrets.local.json tidak ditemukan di bundle"
-                return
-            }
-            let cred = try JSONDecoder().decode(Credentials.self, from: Data(contentsOf: url))
-            let c = YConnectClient(credentials: cred)
-            c.keepAlivePolicy = keepAlivePolicy
-            #if canImport(UIKit)
-            UIDevice.current.isBatteryMonitoringEnabled = true
-            c.batteryLevelProvider = {
-                let level = UIDevice.current.batteryLevel   // -1 kalau tak diketahui (simulator dll)
-                return level < 0 ? 100 : Int((level * 100).rounded())
-            }
-            #endif
-            c.onDiscovery = { [weak self] name, rssi, isMatch in
-                self?.recorder.appendRaw(.scan, "name=\(name ?? "-") rssi=\(rssi) match=\(isMatch)")
-                Task { @MainActor in
-                    self?.addDiscovery(name: name, rssi: rssi, isMatch: isMatch)
-                }
-            }
-            c.onAuthStage = { [weak self] stage in
-                self?.recorder.appendRaw(.info, stage)
-                Task { @MainActor in
-                    self?.addAuthTrace(stage)
-                }
-            }
-            c.onRawFrame = { [weak self] direction, message in
-                self?.recorder.appendRaw(direction, message)
-            }
-            c.delegate = self
-            client = c
-            c.start()
-        } catch {
-            errorMessage = "Gagal memuat kredensial: \(error.localizedDescription)"
+        let c = YConnectClient(credentials: credentials, targetPeripheralID: peripheralID,
+                               restoresState: !pairing)
+        c.keepAlivePolicy = keepAlivePolicy
+        #if canImport(UIKit)
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        c.batteryLevelProvider = {
+            let level = UIDevice.current.batteryLevel
+            return level < 0 ? 100 : Int((level * 100).rounded())
         }
+        #endif
+        c.onDiscovery = { [weak self] name, rssi, isMatch in
+            self?.recorder.appendRaw(.scan, "name=\(name ?? "-") rssi=\(rssi) match=\(isMatch)")
+            Task { @MainActor in self?.addDiscovery(name: name, rssi: rssi, isMatch: isMatch) }
+        }
+        c.onAuthStage = { [weak self] stage in
+            self?.recorder.appendRaw(.info, stage)
+            Task { @MainActor in self?.addAuthTrace(stage) }
+        }
+        c.onRawFrame = { [weak self] direction, message in
+            self?.recorder.appendRaw(direction, message)
+        }
+        c.delegate = self
+        client = c
+        c.start()
     }
 
     @MainActor
@@ -188,6 +240,11 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     }
 
     func disconnect() {
+        pendingPairing = nil
+        pairingTimeout?.cancel()
+        pairingTimeout = nil
+        if pairingAttempt == .connecting { pairingAttempt = .idle }
+        client?.delegate = nil
         client?.stop()
         client = nil
         state = .poweredOff
@@ -359,6 +416,35 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     // MARK: - YConnectClientDelegate
 
     func client(_ client: YConnectClient, didChangeState state: ClientState) {
+        guard self.client === client else { return }
+        if let pending = pendingPairing {
+            if state == .streaming {
+                // .streaming baru dikirim setelah balasan auth 0x5A diterima.
+                do {
+                    try PairingFile.saveAccepted(pending)
+                    pendingPairing = nil
+                    pairingTimeout?.cancel()
+                    pairingTimeout = nil
+                    hasPairing = true
+                    pairingAttempt = .paired
+                } catch {
+                    Task { @MainActor [weak self] in
+                        guard let self, self.client === client else { return }
+                        self.failPairing("Auth diterima motor, tetapi file pairing gagal disimpan. Coba lagi.")
+                    }
+                }
+            } else if case .failed(let message) = state {
+                Task { @MainActor [weak self] in
+                    guard let self, self.client === client else { return }
+                    self.failPairing(message)
+                }
+            } else if state == .poweredOff {
+                Task { @MainActor [weak self] in
+                    guard let self, self.client === client else { return }
+                    self.failPairing("Bluetooth tidak siap. Periksa izin dan nyalakan Bluetooth, lalu coba lagi.")
+                }
+            }
+        }
         // Jangan membawa snapshot dari koneksi sebelumnya ke sesi auth baru.
         if self.state == .streaming && state != .streaming {
             snapshot = TelemetrySnapshot()
@@ -368,6 +454,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     }
 
     func client(_ client: YConnectClient, didUpdate snapshot: TelemetrySnapshot) {
+        guard self.client === client else { return }
         self.snapshot = snapshot
         // Lihat dokblok sampleCSVIfDue(): notifikasi BLE ini yang menjaga
         // rekaman CSV tetap jalan di background walau timer 1 Hz telat/mati.

@@ -124,6 +124,7 @@ public final class YConnectClient: NSObject {
     public var streamWatchdogSeconds: TimeInterval = 5
     private var streamWatchdog: Timer?
 
+    private let targetPeripheralID: UUID?
     private let credentials: Credentials
     private let decoder: TelemetryDecoder
     /// Bila auth pertama ditolak, coba sekali lagi dengan bondingFlag dibalik.
@@ -164,7 +165,11 @@ public final class YConnectClient: NSObject {
 
     public init(credentials: Credentials,
                 decoder: TelemetryDecoder = TelemetryDecoder(),
-                queue: DispatchQueue? = nil) {
+                queue: DispatchQueue? = nil,
+                targetPeripheralID: UUID? = nil,
+                restoresState: Bool = true) {
+        self.targetPeripheralID = targetPeripheralID
+        self.lastKnownPeripheralID = targetPeripheralID
         self.credentials = credentials
         self.decoder = decoder
         super.init()
@@ -173,9 +178,9 @@ public final class YConnectClient: NSObject {
         // app lagi dan memanggil willRestoreState(_:) dengan peripheral yang
         // sama — tanpa ini, sesi + rekaman yang sedang jalan hilang total tanpa
         // kesempatan nyambung ulang otomatis.
-        let options: [String: Any] = [
+        let options: [String: Any] = restoresState ? [
             CBCentralManagerOptionRestoreIdentifierKey: "com.rupi.TelAerox155.central"
-        ]
+        ] : [:]
         self.central = CBCentralManager(delegate: self, queue: queue, options: options)
     }
 
@@ -266,7 +271,7 @@ public final class YConnectClient: NSObject {
 
     private func armAuthWatchdog(bonded: Bool) {
         disarmAuthWatchdog()
-        let label = "auth nyangkut kediem: CCU nggak balas 0x5A dalam \(Int(authWatchdogSeconds)) dt (bonded=\(bonded ? 1 : 0)). Matiin CCU, nyalain lagi, trus hubungkan ulang — kalau tetep, cek ccuid/passKey di secrets.local.json."
+        let label = "auth nyangkut kediem: CCU nggak balas 0x5A dalam \(Int(authWatchdogSeconds)) dt (bonded=\(bonded ? 1 : 0)). Matiin CCU, nyalain lagi, trus hubungkan ulang — kalau tetep, periksa kredensial melalui layar Pairing Motor."
         let t = Timer(timeInterval: authWatchdogSeconds, repeats: false) { [weak self] _ in
             guard let self else { return }
             self.disarmAuthWatchdog()
@@ -397,6 +402,7 @@ public final class YConnectClient: NSObject {
 
         // Balasan auth?
         if raw.first == 0x5A, let sp = StartProcessing(raw) {
+            guard !userRequestedStop, state == .authenticating else { return }
             disarmAuthWatchdog()
             if sp.accepted {
                 onAuthStage?("terima 0x5A ACCEPTED (flag=\(sp.flag)) → streaming")
@@ -517,7 +523,8 @@ extension YConnectClient: CBCentralManagerDelegate {
     public func centralManager(_ central: CBCentralManager,
                                willRestoreState dict: [String: Any]) {
         guard let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral],
-              let p = peripherals.first else { return }
+              let p = peripherals.first,
+              targetPeripheralID == nil || p.identifier == targetPeripheralID else { return }
         onAuthStage?("state restoration: CCU dipulihkan iOS (cbState=\(p.state.rawValue)) — verifikasi ulang services")
         peripheral = p
         lastKnownPeripheralID = p.identifier
@@ -550,6 +557,7 @@ extension YConnectClient: CBCentralManagerDelegate {
         if let name = advName {
             isMatch = DeviceName.matches(name)
                 && DeviceName.ccuid(from: name) == credentials.ccuid
+                && (targetPeripheralID == nil || peripheral.identifier == targetPeripheralID)
         }
         onDiscovery?(advName, RSSI.intValue, isMatch)
 

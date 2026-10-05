@@ -12,3 +12,8 @@ xcrun swiftc -parse-as-library -default-isolation MainActor -module-cache-path "
   TelAerox155/YConnectKit/TelemetryDecoder.swift TelAerox155/YConnectKit/BLELogFormat.swift \
   Tests/SensorRecordingChecks.swift -o "$check_dir/checks"
 "$check_dir/checks"
+
+xcrun swiftc -parse-as-library -default-isolation MainActor -module-cache-path "$check_dir/modules" \
+  TelAerox155/YConnectKit/Checksum.swift TelAerox155/YConnectKit/AuthFrame.swift \
+  TelAerox155/PairingCredentials.swift Tests/PairingChecks.swift -o "$check_dir/pairing-checks"
+"$check_dir/pairing-checks"

@@ -2,7 +2,8 @@
 
 Dokumen ini menyimpan bukti teknis analisis statis. Status implementasi dan
 urutan validasi berikutnya ada di [rencana pairing](03-auth-pairing-input.md).
-Scanner QR, Keychain, dan login Yamaha belum diimplementasikan di TelAerox155.
+Scanner Bluetooth/QR dan penyimpanan file setelah auth kini diimplementasikan,
+tetapi belum diuji dengan QR/motor asli. Login Yamaha belum diimplementasikan.
 
 ## Kesimpulan
 
@@ -113,12 +114,12 @@ Respons server berisi passKey tidak membuktikan cara server menghitungnya.
 
 ## 4. Implikasi untuk TelAerox155
 
-Jalur QR dapat dirancang: scan QR → decode lokal → simpan kredensial di
-Keychain → scan BLE dan cocokkan CCU → auth memakai frame yang sudah ada.
-App resmi memeriksa QR terhadap kendaraan yang sudah dipilih; menaruh scan
-QR sebelum scan BLE adalah rancangan kita, belum uji perilaku motor.
+Alur yang diimplementasikan: scan BLE → pilih motor → decode QR dan cocokkan
+CCU → coba auth → setelah 0x5A accepted, buat file privat secrets.local.json.
+Pilihan perangkat saja atau QR valid belum menandai motor paired. File lama
+tetap tersimpan jika percobaan baru gagal. Belum ada uji perilaku motor nyata.
 
-Sebelum implementasi koneksi, validasi satu QR milik pengguna secara lokal,
+Sebelum menyatakan pairing teruji, validasi satu QR milik pengguna secara lokal,
 tanpa mencetak payload/passKey ke log. Pastikan bagian CCU cocok dengan
 normalisasi nama BLE yang dipakai client. Makna empat karakter sisa,
 kompatibilitas stiker, dan penerimaan kredensial oleh CCU masih terbuka.

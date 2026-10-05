@@ -8,6 +8,7 @@ struct ContentView: View {
     // Default "Penuh" — hasil uji lapangan paling stabil. Perangkat yang sudah
     // pernah menyimpan pilihan lain tidak ikut berubah (lihat TelemetryStore).
     @AppStorage("keepAlivePolicy") private var keepAlivePolicyRaw: String = KeepAlivePolicy.full.rawValue
+    @State private var showPairing = false
     @State private var showRecordSheet = false
     @State private var showAuthCopiedToast = false
     // Kartu sensor yang di-tap → tampilkan penjelasan (SensorCatalog). key
@@ -43,6 +44,7 @@ struct ContentView: View {
         } message: {
             Text(store.errorMessage ?? "Terjadi kesalahan")
         }
+        .sheet(isPresented: $showPairing) { PairingView(store: store) }
         .sheet(isPresented: $showRecordSheet) {
             RecordingView(store: store, recorder: store.recorder, library: store.recorder.library,
                           location: store.location, accent: accent)
@@ -69,6 +71,11 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button { showPairing = true } label: {
+                    Image(systemName: "qrcode").font(.title3)
+                }
+                .accessibilityLabel("Pairing Motor")
+                .disabled(store.isActive || store.isConnecting)
                 RecordHeaderButton(recorder: store.recorder) { showRecordSheet = true }
                 connectButton
             }
@@ -109,10 +116,16 @@ struct ContentView: View {
         } else if store.isConnecting {
             label = "Batalkan"; icon = "xmark.circle.fill"
         } else {
-            label = "Hubungkan"; icon = "bolt.fill"
+            label = store.hasPairing ? "Hubungkan" : "Pairing"; icon = "bolt.fill"
         }
         return Button {
-            (store.isActive || store.isConnecting) ? store.disconnect() : store.connect()
+            if store.isActive || store.isConnecting {
+                store.disconnect()
+            } else if store.hasPairing {
+                store.connect()
+            } else {
+                showPairing = true
+            }
         } label: {
             Label(label, systemImage: icon)
                 .font(.subheadline.weight(.semibold))

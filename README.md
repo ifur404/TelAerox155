@@ -113,8 +113,31 @@ serta downsampling rute panjang. Tidak menulis ke Documents pengguna.
 `TelAerox155/secrets.local.json` (kalau ada) berisi kredensial motor lokal dan
 sudah di-`.gitignore` — jangan pernah di-commit atau dibagikan.
 
-Aplikasi saat ini masih memakai file JSON tersebut. Pairing lewat QR dan
-penyimpanan Keychain belum diimplementasikan. Analisis statis menemukan
-jalur QR CCU yang mengekstrak `passKey` lokal, tetapi belum diuji dengan QR
-asli atau motor. Lihat [rencana pairing dan langkah validasi](docs/research/03-auth-pairing-input.md)
-serta [bukti analisis APK](docs/research/04-apk-qr-pairing.md).
+Alur pairing di aplikasi:
+
+1. Tekan **Pairing**, lalu pilih motor dari daftar Bluetooth sekitar.
+2. Pilih **QR** dan scan QR bawaan motor atau tempel payload-nya.
+3. Tekan **Coba hubungkan**. QR harus cocok dengan CCUID motor yang dipilih.
+4. Setelah motor menerima auth (`0x5A` accepted), aplikasi membuat
+   `Application Support/Pairing/secrets.local.json` dan menampilkan berhasil paired.
+5. Koneksi berikutnya memakai file tersebut; pengguna tidak perlu menyediakan JSON.
+
+File dibuat di penyimpanan privat aplikasi, bukan folder rekaman yang terlihat
+di Files. File menggunakan proteksi iOS sampai perangkat dibuka pertama kali
+setelah restart dan direktori dikecualikan dari backup. Format kredensial tetap
+kompatibel dengan `Credentials`, ditambah identifier Bluetooth dan waktu pairing.
+
+QR salah motor, penolakan auth, timeout, atau pembatalan tidak membuat pairing
+baru dan tidak menimpa pairing lama. **Lupakan motor tersimpan** menghapus file
+setelah konfirmasi. Alur impor JSON/penyimpanan sebelum auth telah dihapus.
+
+Pilihan **4 digit rangka** ditampilkan, tetapi **belum dapat menghubungkan**:
+APK resmi mengambil VIN dan passKey melalui layanan Yamaha dengan token sesi.
+Integrasi login Yamaha belum tersedia; empat digit tidak dikirim sebagai
+passKey BLE. Pilihan ini dijelaskan secara eksplisit di layar dan tombol
+connect-nya belum diaktifkan.
+
+Build dan pemeriksaan sintetis tidak membuktikan pairing nyata. Scanner,
+persistensi setelah auth, dan koneksi ulang masih perlu diuji di iPhone dengan
+QR dan motor sendiri. Lihat [rencana pairing](docs/research/03-auth-pairing-input.md)
+dan [bukti analisis APK](docs/research/04-apk-qr-pairing.md).

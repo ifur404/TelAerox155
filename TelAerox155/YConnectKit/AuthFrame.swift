@@ -1,7 +1,7 @@
 import Foundation
 
 /// Kredensial motor — SATU-SATUNYA hal yang perlu ditulis ke CCU.
-/// Diperoleh sekali dari capture app resmi (lihat secrets.local.json).
+/// Diperoleh dari QR CCU; file pairing disimpan setelah auth diterima motor.
 nonisolated public struct Credentials: Codable, Equatable {
     public let ccuid: String       // 14 char ASCII
     public let passKey: String     // 6 char ASCII

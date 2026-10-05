@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>NSCameraUsageDescription</key>
+    <string>Memindai QR Y-Connect milik motor untuk menyimpan kredensial pairing di iPhone.</string>
     <key>NSMotionUsageDescription</key>
     <string>Merekam gerakan, guncangan, tekanan udara, dan perubahan ketinggian iPhone untuk analisis perjalanan.</string>
 	<!-- UIBackgroundModes butuh nilai array — INFOPLIST_KEY_UIBackgroundModes di
