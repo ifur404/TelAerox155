@@ -366,7 +366,7 @@ public final class YConnectClient: NSObject {
         if keepAlivePolicy == .full {
             let frame058A = PeriodicFrame.build058A(batteryPercent: batteryLevelProvider(),
                                                      counter: periodicCounter)
-            onRawFrame?(.tx, "058A #\(periodicCounter) len=\(frame058A.count)B hex=\(DiagnosticLog.hex(frame058A))")
+            onRawFrame?(.tx, "058A #\(periodicCounter) len=\(frame058A.count)B hex=\(BLELogFormat.hex(frame058A))")
             periodicCounter = periodicCounter < 254 ? periodicCounter + 1 : 0
             p.writeValue(Data(frame058A), for: tx, type: .withoutResponse)
         }
@@ -377,7 +377,7 @@ public final class YConnectClient: NSObject {
             guard let self, let p = self.peripheral, let tx = self.txChar, self.state == .streaming,
                   p.canSendWriteWithoutResponse else { return }
             let frame058B = PeriodicFrame.build058B(counter: self.periodicCounter)
-            self.onRawFrame?(.tx, "058B #\(self.periodicCounter) len=\(frame058B.count)B hex=\(DiagnosticLog.hex(frame058B))")
+            self.onRawFrame?(.tx, "058B #\(self.periodicCounter) len=\(frame058B.count)B hex=\(BLELogFormat.hex(frame058B))")
             self.periodicCounter = self.periodicCounter < 254 ? self.periodicCounter + 1 : 0
             p.writeValue(Data(frame058B), for: tx, type: .withoutResponse)
         }
@@ -463,9 +463,9 @@ public final class YConnectClient: NSObject {
     /// 52 byte) diganti placeholder — sisanya (header, bonding flag, counter,
     /// checksum) aman ditampilkan buat diagnosa layout/panjang frame.
     private static func redactedAuthHex(_ frame: [UInt8]) -> String {
-        guard frame.count == AuthFrame.length else { return DiagnosticLog.hex(frame) }
-        let header = DiagnosticLog.hex(Array(frame[0..<5]))
-        let trailer = DiagnosticLog.hex(Array(frame[57..<60]))
+        guard frame.count == AuthFrame.length else { return BLELogFormat.hex(frame) }
+        let header = BLELogFormat.hex(Array(frame[0..<5]))
+        let trailer = BLELogFormat.hex(Array(frame[57..<60]))
         return "\(header) [52B kredensial disensor] \(trailer)"
     }
 
@@ -476,13 +476,13 @@ public final class YConnectClient: NSObject {
               let frame = try? Frame(verifying: raw),
               let recs = try? frame.records(),
               let vinRec = recs.first(where: { $0.localID == (0xF1, 0x90) }) else {
-            return DiagnosticLog.hex(raw)
+            return BLELogFormat.hex(raw)
         }
         var out = raw
         for i in vinRec.dataStart..<(vinRec.dataStart + vinRec.length) where i < out.count {
             out[i] = 0x3F   // '?'
         }
-        return DiagnosticLog.hex(out) + " (VIN disensor)"
+        return BLELogFormat.hex(out) + " (VIN disensor)"
     }
 }
 

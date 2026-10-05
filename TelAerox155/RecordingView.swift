@@ -4,9 +4,7 @@ import CoreLocation
 import UIKit
 #endif
 
-/// Halaman "Rekam Sesi" — dipisah dari sheet Log Diagnostik (dulu dua hal ini
-/// nyampur di satu sheet dan membingungkan: toggle log, format, tombol rekam,
-/// dan tombol salin/bagikan log semuanya berdempetan tanpa hierarki jelas).
+/// Halaman "Rekam Sesi" untuk data sensor dan frame BLE mentah.
 ///
 /// Alurnya sekarang satu arah dari atas ke bawah:
 /// 1. Kartu kontrol — pilih jenis rekaman → "Mulai Rekam", atau (saat merekam)
@@ -405,6 +403,22 @@ private struct RecordingLiveCard: View {
 
 // MARK: - Baris riwayat
 
+private struct RecordingTypeBadge: View {
+    let format: SessionRecorder.Format
+    let accent: Color
+
+    var body: some View {
+        Text(format == .csv ? "CSV" : "RAW")
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(format == .csv ? accent : .orange)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background((format == .csv ? accent : .orange).opacity(0.15), in: Capsule())
+            .fixedSize()
+            .accessibilityLabel(format == .csv ? "CSV, data sensor" : "RAW, frame BLE mentah")
+    }
+}
+
 private struct RecordingRow: View {
     let session: RecordingSession
     let isActive: Bool
@@ -415,15 +429,18 @@ private struct RecordingRow: View {
         HStack(spacing: 12) {
             Image(systemName: session.format.icon)
                 .font(.body)
-                .foregroundStyle(isActive ? RecordingPalette.red : accent)
+                .foregroundStyle(isActive ? RecordingPalette.red : typeColor)
                 .frame(width: 36, height: 36)
-                .background((isActive ? RecordingPalette.red : accent).opacity(0.15),
+                .background((isActive ? RecordingPalette.red : typeColor).opacity(0.15),
                             in: RoundedRectangle(cornerRadius: 10))
             VStack(alignment: .leading, spacing: 3) {
-                Text(session.displayTitle)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(session.displayTitle)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    RecordingTypeBadge(format: session.format, accent: accent)
+                }
                 if isActive {
                     Text("Sedang merekam • \(RecordingFormat.size(liveBytes))")
                         .font(.caption)
@@ -444,6 +461,8 @@ private struct RecordingRow: View {
         }
         .padding(.vertical, 2)
     }
+
+    private var typeColor: Color { session.format == .csv ? accent : .orange }
 }
 
 // MARK: - Detail sesi
@@ -528,6 +547,7 @@ struct RecordingDetailView: View {
             Section {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 10) {
+                        RecordingTypeBadge(format: s.format, accent: accent)
                         Image(systemName: s.format.icon)
                             .foregroundStyle(accent)
                         Text(s.format.title)
@@ -573,6 +593,13 @@ struct RecordingDetailView: View {
 
             if s.format == .csv && !isActive {
                 analysisSections
+            }
+
+            if s.format == .bleRaw, let url = library.url(for: s) {
+                Section("Preview RAW") {
+                    RawLogPreviewView(url: url, isActive: isActive, accent: accent)
+                }
+                .listRowBackground(RecordingPalette.card)
             }
 
             Section {

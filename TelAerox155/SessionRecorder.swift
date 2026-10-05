@@ -2,13 +2,11 @@ import Foundation
 import Combine
 import CoreLocation
 
-/// Rekaman sesi ke FILE (bukan buffer memori seperti `DiagnosticLog`) — dua format:
+/// Rekaman sesi ke file — dua format:
 ///
-/// - `.bleRaw`: baris teks TX/RX/INFO/SCAN mentah, format sama seperti
-///   `DiagnosticLog`, tapi ditulis LANGSUNG ke disk per baris lewat `FileHandle`
-///   supaya aman dipakai lama (termasuk saat app di background) tanpa RAM
-///   membengkak — beda dari `DiagnosticLog` yang memang sengaja disimpan di
-///   memori (ring buffer) buat ditampilkan live di UI.
+/// - `.bleRaw`: baris teks TX/RX/INFO/SCAN mentah, ditulis langsung ke disk
+///   per baris lewat `FileHandle` supaya aman dipakai lama (termasuk saat app
+///   di background) tanpa RAM membengkak.
 /// - `.csv`: satu baris per detik, nilai telemetri TERDECODE (bukan hex
 ///   mentah), dengan baris header di awal file.
 ///
@@ -17,7 +15,7 @@ import CoreLocation
 /// dimatikan (mis. jalan semalaman di background) tidak membengkak tanpa batas
 /// dan menghabiskan storage device.
 ///
-/// Class ini TIDAK di-`nonisolated` — beda dari `DiagnosticLog` — karena semua
+/// Class ini TIDAK di-`nonisolated` karena semua
 /// pemanggilnya (closure `onRawFrame`/timer 1 Hz di `TelemetryStore`) sudah
 /// berjalan MainActor-isolated (proyek ini pakai
 /// SWIFT_DEFAULT_ACTOR_ISOLATION=MainActor, lihat catatan di AGENTS.md/
@@ -208,7 +206,7 @@ final class SessionRecorder: ObservableObject {
 
     // MARK: - BLE Raw
 
-    /// Dipanggil dari `onRawFrame` — no-op kalau tidak sedang merekam format
+    /// Dipanggil dari callback BLE dan tahap koneksi — no-op kalau tidak sedang merekam format
     /// ini, jadi aman dipanggil terus-menerus tanpa cek tambahan di pemanggil.
     func appendRaw(_ direction: LogDirection, _ message: String) {
         guard isRecording, format == .bleRaw, let started = startedAt else { return }
@@ -218,7 +216,7 @@ final class SessionRecorder: ObservableObject {
 
     // MARK: - CSV
 
-    /// Dipanggil dari timer 1 Hz yang sama dengan yang me-refresh `logLineCount`
+    /// Dipanggil dari sampling TelemetryStore (~1 Hz)
     /// — satu baris per detik, nilai TERDECODE (bukan raw byte). `location`
     /// nil kalau GPS belum ada fix (mis. baru start, indoor, atau izin belum
     /// diberikan) — kolom gps_* dikosongkan di baris itu, bukan menghentikan

@@ -10,6 +10,8 @@ lewat Bluetooth LE — read-only, tanpa mengirim perintah kontrol kendaraan.
   - `TelemetryStore.swift` — `ObservableObject` (`@MainActor`) yang menjembatani
     `YConnectClient` ke SwiftUI: state koneksi, snapshot telemetri, daftar
     perangkat yang terlihat saat scanning, dan trace tahap auth.
+  - `SessionRecorder.swift` — rekaman data sensor (CSV) atau frame BLE mentah
+    (TXT, kredensial/VIN disensor), tersimpan di riwayat untuk dibagikan/dihapus.
   - `YConnectKit/` — modul BLE murni, tanpa dependensi SwiftUI:
     - `YConnectClient.swift` — client CoreBluetooth: scan, connect, auth, keep-alive.
     - `Frame.swift`, `PeriodicFrame.swift` — encoding/decoding frame protokol CCU.
@@ -18,7 +20,7 @@ lewat Bluetooth LE — read-only, tanpa mengirim perintah kontrol kendaraan.
     - `Checksum.swift` — checksum frame.
     - `Mapping.swift` — mapping field frame → nilai telemetri.
     - `TelemetryDecoder.swift` — decode payload frame jadi `TelemetrySnapshot`.
-    - `DiagnosticLog.swift` — log mentah TX/RX untuk debugging (kredensial disensor).
+    - `BLELogFormat.swift` — arah log dan format hex untuk rekaman BLE mentah.
 
 ## Kontrak keamanan
 

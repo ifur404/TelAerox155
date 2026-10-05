@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -9,7 +8,6 @@ struct ContentView: View {
     // Default "Penuh" — hasil uji lapangan paling stabil. Perangkat yang sudah
     // pernah menyimpan pilihan lain tidak ikut berubah (lihat TelemetryStore).
     @AppStorage("keepAlivePolicy") private var keepAlivePolicyRaw: String = KeepAlivePolicy.full.rawValue
-    @State private var showLogSheet = false
     @State private var showRecordSheet = false
     @State private var showAuthCopiedToast = false
     // Kartu sensor yang di-tap → tampilkan penjelasan (SensorCatalog). key
@@ -45,9 +43,6 @@ struct ContentView: View {
         } message: {
             Text(store.errorMessage ?? "Terjadi kesalahan")
         }
-        .sheet(isPresented: $showLogSheet) {
-            LogSheetView(store: store, accent: accent)
-        }
         .sheet(isPresented: $showRecordSheet) {
             RecordingView(store: store, recorder: store.recorder, library: store.recorder.library,
                           location: store.location, accent: accent)
@@ -75,7 +70,6 @@ struct ContentView: View {
                 }
                 Spacer()
                 RecordHeaderButton(recorder: store.recorder) { showRecordSheet = true }
-                logButton
                 connectButton
             }
 
@@ -101,25 +95,6 @@ struct ContentView: View {
                 }
             }
         }
-    }
-
-    /// Tombol log diagnostik — selalu ada di header (idle ATAU streaming),
-    /// karena mau lihat log paling sering justru PAS/SEHABIS gagal, bukan cuma
-    /// saat idle. Badge titik oranye muncul kalau ada baris terkumpul.
-    private var logButton: some View {
-        Button { showLogSheet = true } label: {
-            ZStack(alignment: .topTrailing) {
-                Image(systemName: "doc.text.magnifyingglass")
-                    .font(.system(size: 17, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.85))
-                    .frame(width: 34, height: 34)
-                    .background(Color.white.opacity(0.08), in: Circle())
-                if store.logLineCount > 0 {
-                    Circle().fill(accent).frame(width: 7, height: 7)
-                }
-            }
-        }
-        .buttonStyle(.plain)
     }
 
     /// Sebelumnya: tombol cuma tahu Hubungkan/Putuskan, dan di-DISABLE selama
@@ -616,197 +591,6 @@ struct ContentView: View {
     }
 }
 
-/// Sheet "Log Diagnostik" — diekstrak jadi View sendiri (bukan computed
-/// property di ContentView) supaya `.fileExporter` menempel pada hierarki DI
-/// DALAM sheet, bukan di root ZStack milik ContentView. Sebelumnya
-/// `.fileExporter` dipasang di root sementara dipicu dari dalam sheet — UIKit
-/// menolak mem-present modal kedua di atas sheet yang sudah aktif, dan
-/// kegagalannya senyap total (completion handler membuang `Result`).
-struct LogSheetView: View {
-    @ObservedObject var store: TelemetryStore
-    let accent: Color
-    @Environment(\.dismiss) private var dismiss
-
-    // Binding lokal ke key yang sama dengan TelemetryStore.diagLogEnabled —
-    // pola ini sudah dipakai buat keepAlivePolicy (lihat ContentView.keepAlivePicker):
-    // @AppStorage sendiri yang memicu re-render View saat berubah, sedangkan
-    // TelemetryStore membaca key yang sama buat gating logika internal.
-    // Binding lewat $store.diagLogEnabled TIDAK dipakai karena properti itu
-    // bukan @Published — perubahannya tidak akan memicu objectWillChange.
-    @AppStorage("diagLogEnabled") private var diagLogEnabled: Bool = false
-
-    @State private var showLogExporter = false
-    @State private var showCopiedToast = false
-    // Di-set SEKALI saat tombol ditekan, bukan dibaca ulang tiap body
-    // dievaluasi (snapshot telemetri berubah ~20 Hz saat streaming — building
-    // ulang string log yang bisa ribuan baris tiap frame itu boros).
-    @State private var logSnapshotForExport = ""
-    @State private var exportFilename = ""
-    @State private var exportResultMessage: String?
-    @State private var exportResultIsError = false
-    // File temp buat ShareLink — dibuat sekali per tap "Bagikan", dibaca dari
-    // App Sandbox tmp/ (bukan Documents) karena isinya sekali-pakai.
-    @State private var shareURL: URL?
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 20) {
-                VStack(spacing: 6) {
-                    Image(systemName: "doc.text.magnifyingglass")
-                        .font(.system(size: 40))
-                        .foregroundStyle(accent)
-                    Text("\(store.logLineCount) baris terkumpul")
-                        .font(.headline)
-                        .foregroundStyle(.white)
-                    Text("Rekaman semua frame BLE (TX/RX mentah) + tahap koneksi sejak app dibuka. Kredensial (ccuid/passKey/phoneUUID) dan VIN otomatis disensor — aman dibagikan/dikirim buat dianalisa.")
-                        .font(.caption)
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 24)
-                }
-                .padding(.top, 12)
-
-                Toggle(isOn: $store.diagLogEnabled) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Aktifkan Log Diagnostik")
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.white)
-                        Text("Mati secara default. Saat aktif, semua frame BLE mentah + tahap koneksi disimpan ke buffer ini sampai dihapus atau app ditutup.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .tint(accent)
-                .padding(.horizontal, 24)
-
-                Label("Mau merekam perjalanan (RPM, kecepatan, GPS) ke file? Pakai tombol rekam ⏺ di layar utama.",
-                      systemImage: "record.circle")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 24)
-
-                Divider()
-                    .overlay(Color.white.opacity(0.1))
-                    .padding(.horizontal, 24)
-
-                VStack(spacing: 10) {
-                    Button {
-                        #if canImport(UIKit)
-                        UIPasteboard.general.string = store.logText()
-                        #endif
-                        showCopiedToast = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
-                            showCopiedToast = false
-                        }
-                    } label: {
-                        Label(showCopiedToast ? "Tersalin!" : "Salin Log", systemImage: "doc.on.doc")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(accent)
-
-                    Button {
-                        prepareShareFile()
-                    } label: {
-                        Label("Bagikan Log…", systemImage: "square.and.arrow.up")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button {
-                        logSnapshotForExport = store.logText()
-                        exportFilename = Self.makeLogFileName()
-                        showLogExporter = true
-                    } label: {
-                        Label("Simpan sebagai File…", systemImage: "square.and.arrow.down")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button(role: .destructive) {
-                        store.clearLog()
-                    } label: {
-                        Label("Hapus Log", systemImage: "trash")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(store.logLineCount == 0)
-
-                    if let message = exportResultMessage {
-                        Text(message)
-                            .font(.caption)
-                            .foregroundStyle(exportResultIsError ? .red : .green)
-                            .multilineTextAlignment(.center)
-                    }
-                }
-                .padding(.horizontal, 24)
-
-                Spacer()
-            }
-            .navigationTitle("Log Diagnostik")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Tutup") { dismiss() }
-                }
-            }
-        }
-        .preferredColorScheme(.dark)
-        .fileExporter(isPresented: $showLogExporter,
-                      document: LogDocument(text: logSnapshotForExport),
-                      contentType: .plainText,
-                      defaultFilename: exportFilename) { result in
-            switch result {
-            case .success(let url):
-                showExportResult("Tersimpan: \(url.lastPathComponent)", isError: false)
-            case .failure(let error):
-                // NSUserCancelledError (batal dari document picker) bukan
-                // kegagalan sungguhan — jangan tampilkan sebagai error.
-                let nsError = error as NSError
-                if nsError.domain == NSCocoaErrorDomain && nsError.code == NSUserCancelledError {
-                    return
-                }
-                showExportResult("Gagal menyimpan: \(error.localizedDescription)", isError: true)
-            }
-        }
-        .sheet(item: Binding(get: { shareURL.map(ShareItem.init) },
-                              set: { shareURL = $0?.url })) { item in
-            ActivityShareSheet(activityItems: [item.url])
-        }
-    }
-
-    /// "telaerox-log_2026-09-22_20-14-05" — cukup unik + gampang dibaca kalau
-    /// beberapa kali export dalam satu sesi ujicoba di motor.
-    private static func makeLogFileName() -> String {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        return "telaerox-log_\(f.string(from: Date()))"
-    }
-
-    private func showExportResult(_ message: String, isError: Bool) {
-        exportResultMessage = message
-        exportResultIsError = isError
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
-            if exportResultMessage == message { exportResultMessage = nil }
-        }
-    }
-
-    /// Tulis snapshot log ke file temp lalu tampilkan share sheet — jalur ini
-    /// tidak lewat document picker sama sekali, jadi tidak kena masalah
-    /// "modal ganda" yang bikin fileExporter gagal diam.
-    private func prepareShareFile() {
-        let text = store.logText()
-        let name = Self.makeLogFileName() + ".txt"
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
-        do {
-            try text.write(to: url, atomically: true, encoding: .utf8)
-            shareURL = url
-        } catch {
-            showExportResult("Gagal menyiapkan berkas: \(error.localizedDescription)", isError: true)
-        }
-    }
-}
-
 /// Wrapper `Identifiable` supaya `URL` (yang bukan Identifiable) bisa dipakai
 /// dengan `.sheet(item:)`.
 struct ShareItem: Identifiable {
@@ -829,29 +613,6 @@ struct ActivityShareSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 #endif
-
-/// Dokumen plain-text buat `.fileExporter` — dipakai tombol "Simpan sebagai
-/// File…" di LogSheetView. Cukup write-only (init(configuration:) tidak akan
-/// pernah dipakai karena app ini tidak menawarkan buka-log-lama), tapi
-/// FileDocument mewajibkan itu ada.
-struct LogDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [.plainText] }
-
-    var text: String
-    init(text: String) { self.text = text }
-
-    init(configuration: ReadConfiguration) throws {
-        guard let data = configuration.file.regularFileContents,
-              let string = String(data: data, encoding: .utf8) else {
-            throw CocoaError(.fileReadCorruptFile)
-        }
-        text = string
-    }
-
-    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        FileWrapper(regularFileWithContents: Data(text.utf8))
-    }
-}
 
 struct MetricValue: Identifiable {
     let id = UUID()
