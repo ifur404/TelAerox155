@@ -141,3 +141,14 @@ Build dan pemeriksaan sintetis tidak membuktikan pairing nyata. Scanner,
 persistensi setelah auth, dan koneksi ulang masih perlu diuji di iPhone dengan
 QR dan motor sendiri. Lihat [rencana pairing](docs/research/03-auth-pairing-input.md)
 dan [bukti analisis APK](docs/research/04-apk-qr-pairing.md).
+
+Analisis request VIN/passKey dan token sesi tersedia di
+[request Yamaha](docs/research/05-yamaha-pairing-requests.md). Client REST sudah
+dibuat dan diuji dengan respons simulasi; login akun serta uji live belum ada.
+Tes yang benar-benar menghasilkan file kredensial **sintetis**:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer bash Tests/run-yamaha-pairing.sh
+```
+
+Script menampilkan lokasi file hasil tanpa mencetak isi kredensial.

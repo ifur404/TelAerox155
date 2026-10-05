@@ -85,8 +85,9 @@ VIN.dropLast(2).takeLast(4)
 Jadi bukan empat karakter paling akhir: dua karakter paling belakang
 dilewati dahulu. VIN lengkap sudah ada di state dari `ExploredVehicleUIModel`
 (`A0301PairingVINInputViewModel.java`, konstruktor). Asal VIN sebelum layar
-ini belum ditelusuri sampai tuntas; jangan mengasumsikan empat karakter input
-dapat menentukan VIN lengkap secara mandiri.
+ini telah ditelusuri pada [request Yamaha](05-yamaha-pairing-requests.md):
+berasal dari `model_info/{ccuId}` → `vehicleInfo.vinCd`. Empat karakter input
+tidak menentukan VIN lengkap secara mandiri.
 
 Jika cocok dan ada internet, app memanggil `UserVehicleRepository.b(VIN)`
 dengan **VIN lengkap**, bukan empat karakter input.

@@ -61,9 +61,11 @@ public protocol YConnectClientDelegate: AnyObject {
     func client(_ client: YConnectClient, didReceiveVIN vin: String)
     func client(_ client: YConnectClient, didReceiveModelCode modelCode: String)
     func client(_ client: YConnectClient, didFailWith error: Error)
+    func client(_ client: YConnectClient, didReceiveAuthReply raw: [UInt8], peripheralID: UUID)
 }
 
 public extension YConnectClientDelegate {
+    func client(_ client: YConnectClient, didReceiveAuthReply raw: [UInt8], peripheralID: UUID) {}
     func client(_ client: YConnectClient, didReceiveVIN vin: String) {}
     func client(_ client: YConnectClient, didReceiveModelCode modelCode: String) {}
 }
@@ -404,6 +406,9 @@ public final class YConnectClient: NSObject {
         if raw.first == 0x5A, let sp = StartProcessing(raw) {
             guard !userRequestedStop, state == .authenticating else { return }
             disarmAuthWatchdog()
+            if let peripheral {
+                delegate?.client(self, didReceiveAuthReply: raw, peripheralID: peripheral.identifier)
+            }
             if sp.accepted {
                 onAuthStage?("terima 0x5A ACCEPTED (flag=\(sp.flag)) → streaming")
                 state = .streaming

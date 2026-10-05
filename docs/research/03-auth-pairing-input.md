@@ -22,7 +22,7 @@ atau autentikasi ke motor untuk jalur baru ini.
 | Jalur | Perilaku pada kode yang diperiksa | Yang belum terverifikasi |
 |---|---|---|
 | QR CCU | Decode payload 24 karakter secara lokal, cocokkan ID CCU, ambil enam karakter sebagai passKey | Kesesuaian QR pengguna dan penerimaan oleh CCU |
-| Input potongan VIN | Cocokkan empat karakter dengan VIN yang sudah ada di state, lalu ambil passKey lewat REST menggunakan VIN lengkap dan token sesi | Asal VIN lengkap sebelum layar ini, login/refresh iOS, dan respons layanan saat ini |
+| Input potongan VIN | Cocokkan empat karakter dengan VIN yang sudah ada di state, lalu ambil passKey lewat REST menggunakan VIN lengkap dan token sesi | Login/refresh iOS dan respons layanan saat ini; asal VIN ditemukan di model_info/{ccuId} |
 
 Klaim lama bahwa QR hanya mengisi VIN dan semua passKey harus berasal dari
 cloud digantikan oleh temuan ini. Respons berisi passKey juga tidak
@@ -101,3 +101,10 @@ sebagai passKey atau mencoba kombinasi kredensial.
   kontrak dan keep-alive `0xA6` sesuai `KeepAlivePolicy`.
 - Masa berlaku passKey dan perilaku setelah reset/pairing ulang belum
   diketahui; jangan menjanjikan kredensial berlaku selamanya.
+
+## 6. Kemajuan request Yamaha
+
+[Analisis request lanjutan](05-yamaha-pairing-requests.md) memetakan asal VIN,
+endpoint passKey, serta `accounts.getJWT` Gigya dan header `jwtKey`. Client
+REST dan tes pembuatan file dari respons simulasi sudah tersedia. Ini belum
+mengaktifkan login Yamaha atau membuktikan pairing empat digit secara live.

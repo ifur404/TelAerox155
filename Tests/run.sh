@@ -17,3 +17,5 @@ xcrun swiftc -parse-as-library -default-isolation MainActor -module-cache-path "
   TelAerox155/YConnectKit/Checksum.swift TelAerox155/YConnectKit/AuthFrame.swift \
   TelAerox155/PairingCredentials.swift Tests/PairingChecks.swift -o "$check_dir/pairing-checks"
 "$check_dir/pairing-checks"
+
+bash Tests/run-yamaha-pairing.sh "$check_dir/yamaha-proof"

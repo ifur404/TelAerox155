@@ -42,7 +42,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
 
     @Published private(set) var hasPairing = false
     @Published private(set) var pairingAttempt: PairingAttemptState = .idle
-    private var pendingPairing: PairedMotorcycle?
+    private var pendingPairing: PairingConfirmation?
     private var pairingTimeout: Task<Void, Never>?
 
     @Published var state: ClientState = .poweredOff
@@ -126,7 +126,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         guard let ccuid = device.ccuid, credentials.ccuid == ccuid else {
             throw PairingError.wrongMotorcycle
         }
-        pendingPairing = PairedMotorcycle(credentials: credentials, peripheralID: device.id)
+        pendingPairing = try PairingConfirmation(credentials: credentials, peripheralID: device.id)
         pairingAttempt = .connecting
         state = .connecting
         openConnection(credentials, peripheralID: device.id, pairing: true)
@@ -240,6 +240,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     }
 
     func disconnect() {
+        pendingPairing?.cancel()
         pendingPairing = nil
         pairingTimeout?.cancel()
         pairingTimeout = nil
@@ -415,25 +416,27 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
 
     // MARK: - YConnectClientDelegate
 
+    func client(_ client: YConnectClient, didReceiveAuthReply raw: [UInt8], peripheralID: UUID) {
+        guard self.client === client, let pendingPairing else { return }
+        do {
+            guard try pendingPairing.receiveAuthReply(raw, from: peripheralID) else { return }
+            self.pendingPairing = nil
+            pairingTimeout?.cancel()
+            pairingTimeout = nil
+            hasPairing = true
+            pairingAttempt = .paired
+        } catch {
+            Task { @MainActor [weak self] in
+                guard let self, self.client === client else { return }
+                self.failPairing("Auth diterima motor, tetapi file pairing gagal disimpan. Coba lagi.")
+            }
+        }
+    }
+
     func client(_ client: YConnectClient, didChangeState state: ClientState) {
         guard self.client === client else { return }
-        if let pending = pendingPairing {
-            if state == .streaming {
-                // .streaming baru dikirim setelah balasan auth 0x5A diterima.
-                do {
-                    try PairingFile.saveAccepted(pending)
-                    pendingPairing = nil
-                    pairingTimeout?.cancel()
-                    pairingTimeout = nil
-                    hasPairing = true
-                    pairingAttempt = .paired
-                } catch {
-                    Task { @MainActor [weak self] in
-                        guard let self, self.client === client else { return }
-                        self.failPairing("Auth diterima motor, tetapi file pairing gagal disimpan. Coba lagi.")
-                    }
-                }
-            } else if case .failed(let message) = state {
+        if pendingPairing != nil {
+            if case .failed(let message) = state {
                 Task { @MainActor [weak self] in
                     guard let self, self.client === client else { return }
                     self.failPairing(message)
