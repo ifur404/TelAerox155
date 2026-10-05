@@ -64,6 +64,8 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     /// terpisah oleh user, supaya baterai tidak boros GPS terus-menerus kalau
     /// tidak sedang merekam.
     let location = LocationProvider()
+    let phoneSensors = PhoneSensorProvider()
+    private var appState = "foreground"
 
     private var recordingTimer: Timer?
 
@@ -201,8 +203,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         // walau BLE lagi terputus lama — tanpa ini, rekaman yang lupa di-Stop
         // pas motor mati/keluar jangkauan bisa nyangkut nyala tanpa batas
         // (baterai boros GPS terus, limit 6 jam nggak pernah kecek). Baris CSV
-        // sendiri tetap AMAN tidak ikut ditulis pakai data basi selagi
-        // terputus — lihat guard `state == .streaming` di sampleCSVIfDue().
+        // iPhone tetap direkam; kolom motor kosong selagi terputus.
         if !recorder.isRecording {
             stopRecordingTimer()
         }
@@ -252,26 +253,25 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     ///   walau dipicu dari dua tempat.
     private func sampleCSVIfDue() {
         guard recorder.isRecording, recorder.format == .csv else { return }
-        // Jangan tulis baris pakai `snapshot` basi kalau BLE sedang TIDAK
-        // streaming (disconnect manual, auto-reconnect, gagal auth, dsb) —
-        // tanpa guard ini, timer 1 Hz tetap menulis nilai rpm/speed/dll BEKU
-        // dari update terakhir, dan itu tidak bisa dibedakan dari data live
-        // asli kalau CSV-nya dibaca belakangan.
-        guard state == .streaming else { return }
-        if let last = lastCSVSampleAt, Date().timeIntervalSince(last) < 0.95 { return }
-        lastCSVSampleAt = Date()
+        let now = Date()
+        if let last = lastCSVSampleAt, now.timeIntervalSince(last) < 0.95 { return }
+        lastCSVSampleAt = now
         recorder.appendCSVRow(snapshot: snapshot, vin: vin, modelCode: modelCode,
-                               location: freshLocation())
+                              location: location.lastLocation, bleState: recordingState,
+                              phone: phoneSensors.sample(placement: recorder.phonePlacement),
+                              gpsAuthorization: location.authorizationName,
+                              gpsPrecise: location.isPrecise, appState: appState, at: now)
     }
 
-    /// `location.lastLocation`, tapi kosong kalau fix-nya sudah lebih tua dari
-    /// ~5 detik (mis. GPS kehilangan sinyal di terowongan/parkiran tertutup)
-    /// — daripada CSV terus-terusan nulis titik lama yang terlihat seperti
-    /// motor "diam" di tempat yang sama padahal GPS-nya cuma lagi nggak dapet fix.
-    private func freshLocation() -> CLLocation? {
-        guard let loc = location.lastLocation,
-              Date().timeIntervalSince(loc.timestamp) <= 5 else { return nil }
-        return loc
+    private var recordingState: String {
+        switch state {
+        case .poweredOff: return "poweredOff"
+        case .scanning: return "scanning"
+        case .connecting: return "connecting"
+        case .authenticating: return "authenticating"
+        case .streaming: return "streaming"
+        case .failed: return "failed"
+        }
     }
 
     /// GPS mengikuti status rekaman CSV, tapi dinyalakan LANGSUNG saat rekaman
@@ -290,11 +290,26 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
                 guard let self else { return }
                 self.lastCSVSampleAt = nil
                 if recordingCSV {
+                    self.startRecordingTimer()
                     self.location.start()
-                } else if self.location.isActive {
+                    self.phoneSensors.start()
+                    self.sampleCSVIfDue()
+                } else {
                     self.location.stop()
+                    self.phoneSensors.stop()
+                    if !self.isActive && !self.isConnecting && !self.recorder.isRecording {
+                        self.stopRecordingTimer()
+                    }
                 }
             }
+            .store(in: &cancellables)
+
+        // Update lokasi juga membangunkan sampler saat background, termasuk
+        // ketika BLE terputus. Throttle yang sama mencegah baris duplikat.
+        location.$lastLocation
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.sampleCSVIfDue() }
             .store(in: &cancellables)
 
         // Kalau start() dipanggil saat izin masih .notDetermined, itu cuma
@@ -320,11 +335,13 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         #if canImport(UIKit)
         NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)
             .sink { [weak self] _ in
+                self?.appState = "background"
                 self?.recorder.appendRaw(.info, "=== app → background ===")
             }
             .store(in: &cancellables)
         NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)
             .sink { [weak self] _ in
+                self?.appState = "foreground"
                 self?.recorder.appendRaw(.info, "=== app → foreground ===")
             }
             .store(in: &cancellables)
@@ -342,6 +359,10 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     // MARK: - YConnectClientDelegate
 
     func client(_ client: YConnectClient, didChangeState state: ClientState) {
+        // Jangan membawa snapshot dari koneksi sebelumnya ke sesi auth baru.
+        if self.state == .streaming && state != .streaming {
+            snapshot = TelemetrySnapshot()
+        }
         self.state = state
         setIdleTimerDisabled(state == .streaming)
     }

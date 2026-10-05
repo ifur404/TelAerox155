@@ -43,12 +43,17 @@ final class TripPlayback {
         markerIndex = analysis.routeIndex(at: lo)
     }
 
-    var sample: TripSample? { analysis.sample(at: playhead) }
+    var sample: TripSample? {
+        guard let sample = analysis.sample(at: playhead), abs(sample.t - playhead) <= 1.5 else { return nil }
+        return sample
+    }
 
     func seek(to t: Double) {
         let c = min(range.upperBound, max(range.lowerBound, t))
         playhead = c
-        let idx = analysis.routeIndex(at: c)
+        let nearest = analysis.routeIndex(at: c)
+        let current = analysis.sample(at: c)
+        let idx = current.map { $0.hasGPS && abs($0.t - c) <= 1.5 } == true ? nearest : nil
         if idx != markerIndex { markerIndex = idx }
     }
 
@@ -150,6 +155,16 @@ struct TripRouteMap: View {
                     }
                 }
 
+                ForEach(mapEvents) { event in
+                    Annotation(event.kind.title, coordinate: CLLocationCoordinate2D(latitude: event.lat!, longitude: event.lon!)) {
+                        Button { playback.seek(to: event.t) } label: {
+                            pin(event.kind.icon, color: event.kind == .bump ? .purple : .orange)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(event.kind.title), \(RecordingFormat.clock(event.t))")
+                    }
+                }
+
                 if let first = analysis.route.first {
                     Annotation("Start", coordinate: first.coordinate) {
                         pin("flag.fill", color: .green)
@@ -198,6 +213,12 @@ struct TripRouteMap: View {
     private struct StopPin: Identifiable {
         let id: Double
         let coordinate: CLLocationCoordinate2D
+    }
+
+    /// Maks 30 event terkuat dengan posisi yang valid agar peta tetap terbaca.
+    private var mapEvents: [TripEvent] {
+        Array(analysis.events.filter { $0.lat != nil && $0.lon != nil }
+            .sorted { abs($0.value) > abs($1.value) }.prefix(30))
     }
 
     /// Maks 8 titik berhenti terlama (yang punya koordinat) supaya peta
@@ -358,10 +379,18 @@ struct TripPlaybackBar: View {
     var body: some View {
         VStack(spacing: 8) {
             HStack(spacing: 8) {
-                readout(value: fmt(playback.sample?.speed, "%.0f"), unit: "km/h", color: TripPalette.ecu)
+                readout(value: fmt(playback.sample?.speed ?? playback.sample?.gpsSpeed, "%.0f"), unit: "km/h", color: TripPalette.ecu)
                 readout(value: fmt(playback.sample?.rpm, "%.0f"), unit: "rpm", color: TripPalette.rpm)
                 readout(value: fmt(playback.sample?.throttle, "%.1f"), unit: "° gas", color: TripPalette.throttle)
                 readout(value: fmt(playback.sample?.coolant, "%.0f"), unit: "°C", color: TripPalette.coolant)
+            }
+            if playback.analysis.hasPhoneColumns {
+                HStack(spacing: 8) {
+                    readout(value: fmt(playback.sample?.acceleration, "%+.1f"), unit: "m/s²", color: .orange)
+                    readout(value: fmt(playback.sample?.motionPeak, "%.1f"), unit: "puncak · m/s²", color: .pink)
+                    readout(value: fmt(playback.sample?.gpsAge, "%.1f"), unit: "usia GPS · s", color: .white)
+                    readout(value: fmt(playback.sample?.phoneBattery, "%.0f"), unit: "% iPhone", color: .green)
+                }
             }
             HStack(spacing: 10) {
                 Button {
@@ -561,12 +590,12 @@ struct TripLineChart: View {
                 ForEach(s.points) { p in
                     if area && series.count == 1 {
                         AreaMark(x: .value("Waktu", p.t), yStart: .value("Nilai", yDomain.lowerBound),
-                                 yEnd: .value("Nilai", p.v))
+                                 yEnd: .value("Nilai", p.v), series: .value("Ruas", p.segment))
                             .foregroundStyle(LinearGradient(colors: [s.color.opacity(0.35), s.color.opacity(0.02)],
                                                             startPoint: .top, endPoint: .bottom))
                             .interpolationMethod(.monotone)
                     }
-                    LineMark(x: .value("Waktu", p.t), y: .value("Nilai", p.v), series: .value("Seri", s.id))
+                    LineMark(x: .value("Waktu", p.t), y: .value("Nilai", p.v), series: .value("Seri", "\(s.id)-\(p.segment)"))
                         .foregroundStyle(s.color)
                         .lineStyle(StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
                         .interpolationMethod(.monotone)
@@ -669,7 +698,7 @@ struct TripTimelineCharts: View {
     let playback: TripPlayback
 
     var body: some View {
-        if !analysis.speedSeries.isEmpty {
+        if !analysis.speedSeries.isEmpty || !analysis.gpsSpeedSeries.isEmpty {
             TripLineChart(title: "Kecepatan",
                           series: [TripLineSeries(id: "ECU", points: analysis.speedSeries, color: TripPalette.ecu)]
                             + (analysis.gpsSpeedSeries.isEmpty ? [] :

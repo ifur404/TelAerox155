@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>NSMotionUsageDescription</key>
+    <string>Merekam gerakan, guncangan, tekanan udara, dan perubahan ketinggian iPhone untuk analisis perjalanan.</string>
 	<!-- UIBackgroundModes butuh nilai array — INFOPLIST_KEY_UIBackgroundModes di
 	     project.pbxproj TIDAK didukung mekanisme auto-generate Info.plist Xcode
 	     (key ini diam-diam diabaikan, terbukti hilang total di Info.plist hasil

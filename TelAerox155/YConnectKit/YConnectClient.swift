@@ -215,6 +215,7 @@ public final class YConnectClient: NSObject {
     /// diinginkan. Watchdog baru dipasang di `didConnect()`, membatasi fase
     /// discover→subscribe SETELAH benar-benar tersambung secara fisik.
     private func connect(to p: CBPeripheral) {
+        snapshot = TelemetrySnapshot()
         peripheral = p
         lastKnownPeripheralID = p.identifier
         state = .connecting

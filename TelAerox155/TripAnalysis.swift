@@ -28,9 +28,39 @@ nonisolated struct TripSample: Sendable {
     var gpsSpeed: Double?
     var altitude: Double?
     var accuracy: Double?
-    /// false = koordinat sama persis dengan baris GPS sebelumnya (GPS belum
-    /// update di detik ini) — dipakai di peta tapi tidak dipakai buat
-    /// perbandingan kecepatan ECU vs GPS (nilainya basi).
+    var gpsAge: Double?
+    var gpsTimestamp: String?
+    var verticalAccuracy: Double?
+    var speedAccuracy: Double?
+    var course: Double?
+    var courseAccuracy: Double?
+    var ecuAge: Double?
+    var bleState: String?
+    var motionAge: Double?
+    var motionCount: Double?
+    var motionSpan: Double?
+    var motionPeak: Double?
+    var motionRMS: Double?
+    var verticalPeak: Double?
+    var verticalRMS: Double?
+    var roll: Double?
+    var pitch: Double?
+    var yaw: Double?
+    var rotationRate: Double?
+    var pressure: Double?
+    var relativeAltitude: Double?
+    var barometerAge: Double?
+    var barometerTimestamp: String?
+    var phoneBattery: Double?
+    var phoneBatteryState: String?
+    var placement: PhonePlacement = .unknown
+    var motionStatus: String?
+    var barometerStatus: String?
+    var gpsStatus: String?
+    var acceleration: Double?
+    var distanceKm: Double = 0
+    /// Timestamp fix membedakan sampel baru walau motor diam; CSV lama
+    /// memakai perubahan koordinat karena timestamp sensor belum tersedia.
     var gpsFresh = false
 
     var hasECU: Bool { rpm != nil && speed != nil }
@@ -40,6 +70,7 @@ nonisolated struct TripSample: Sendable {
 nonisolated struct ChartPoint: Identifiable, Sendable {
     let t: Double
     let v: Double
+    var segment = 0
     var id: Double { t }
 }
 
@@ -51,6 +82,7 @@ nonisolated struct RoutePoint: Sendable {
     let lon: Double
     let speed: Double
     let level: Int
+    var segment = 0
 }
 
 /// Potongan rute berkecepatan (kelas) sama — satu MapPolyline per segmen.
@@ -114,6 +146,36 @@ nonisolated struct TripAnalysis: Sendable {
     var rowsAfterKeyOff = 0
     /// Titik GPS yang dibuang (akurasi > 30 m atau lompatan mustahil).
     var gpsRejected = 0
+    var hasPhoneColumns = false
+    var hasQualityColumns = false
+    var recordedSeconds = 0.0
+    var ecuValidSeconds = 0.0
+    var gpsValidSeconds = 0.0
+    var motionValidSeconds = 0.0
+    var bleUnavailableSeconds = 0.0
+    var recordingGapSeconds = 0.0
+    var gaps: [TripDataGap] = []
+    var events: [TripEvent] = []
+    var phoneBatteryStart: Double?
+    var phoneBatteryEnd: Double?
+    var chargingSeconds = 0.0
+    var maxMotionPeak: Double?
+    var altitudeLoss: Double?
+    var elevationSource = "GPS"
+    var elevationProfile: [TripElevationPoint] = []
+    var accelerationSeries: [ChartPoint] = []
+    var motionPeakSeries: [ChartPoint] = []
+    var verticalRMSSeries: [ChartPoint] = []
+    var phoneBatterySeries: [ChartPoint] = []
+    var relativeAltitudeSeries: [ChartPoint] = []
+    var pressureSeries: [ChartPoint] = []
+    var rollSeries: [ChartPoint] = []
+    var pitchSeries: [ChartPoint] = []
+    var yawSeries: [ChartPoint] = []
+    var rotationSeries: [ChartPoint] = []
+    var gradeSeries: [ChartPoint] = []
+    var maxGrade: Double?
+    var minGrade: Double?
 
     // MARK: Ringkasan
     var startTime: Double = 0
@@ -240,8 +302,10 @@ nonisolated struct TripAnalysis: Sendable {
     static func parse(_ text: String) -> TripAnalysis? {
         var lines = text.split(whereSeparator: \.isNewline)
         guard !lines.isEmpty else { return nil }
-        let header = lines.removeFirst().split(separator: ",", omittingEmptySubsequences: false).map(String.init)
-        func col(_ name: String) -> Int? { header.firstIndex(of: name) }
+        let header = CSVCodec.fields(String(lines.removeFirst()))
+        var indices: [String: Int] = [:]
+        for (i, key) in header.enumerated() { indices[key] = i }
+        func col(_ name: String) -> Int? { indices[name] }
         let iT = col("elapsed_s"), iRPM = col("rpm"), iSpeed = col("speed_kmh"), iBatt = col("battery_v"),
             iCool = col("coolant_c"), iIntake = col("intake_c"), iThr = col("throttle_deg"),
             iFi = col("fiError"), iDTC = col("dtc"), iLamp = col("fiWarningLamp"),
@@ -252,12 +316,15 @@ nonisolated struct TripAnalysis: Sendable {
         guard iT != nil else { return nil }
 
         var a = TripAnalysis()
+        a.hasPhoneColumns = col("motion_status") != nil
+        a.hasQualityColumns = col("ble_state") != nil
         var seenECU = false
         var lastFix: (lat: Double, lon: Double, t: Double)?
         var lastOdo: Double?
+        var lastGPSTimestamp: String?
 
         for line in lines {
-            let f = line.split(separator: ",", omittingEmptySubsequences: false)
+            let f = CSVCodec.fields(String(line))
             func num(_ i: Int?) -> Double? {
                 guard let i, i < f.count, !f[i].isEmpty, let v = Double(f[i]), v.isFinite else { return nil }
                 return v
@@ -266,13 +333,54 @@ nonisolated struct TripAnalysis: Sendable {
                 guard let i, i < f.count, !f[i].isEmpty else { return nil }
                 return String(f[i])
             }
-            guard let t = num(iT) else { continue }
+            func n(_ key: String) -> Double? { num(col(key)) }
+            func text(_ key: String) -> String? { str(col(key)) }
+            func freshECU(_ key: String) -> Bool {
+                guard a.hasQualityColumns else { return true }
+                guard text("ble_state") == "streaming", let age = n("ecu_\(key)_age_s") else { return false }
+                return age >= 0 && age <= 5
+            }
+            guard let t = num(iT), t >= 0, t > (a.samples.last?.t ?? -1) else { continue }
             a.rawRows += 1
             var s = TripSample(t: t)
+            s.bleState = text("ble_state")
+            s.ecuAge = n("ecu_rpm_age_s")
+            s.gpsAge = n("gps_age_s")
+            s.gpsTimestamp = text("gps_timestamp_iso")
+            s.verticalAccuracy = n("gps_vertical_accuracy_m")
+            s.speedAccuracy = n("gps_speed_accuracy_mps")
+            s.course = n("gps_course_deg")
+            s.courseAccuracy = n("gps_course_accuracy_deg")
+            s.gpsStatus = text("gps_status")
+            s.placement = PhonePlacement(rawValue: text("phone_placement") ?? "") ?? .unknown
+            s.motionStatus = text("motion_status")
+            s.barometerStatus = text("barometer_status")
+            s.motionAge = n("motion_age_s")
+            s.motionCount = n("motion_samples")
+            s.motionSpan = n("motion_span_s")
+            if s.motionStatus == "active", let age = s.motionAge, (0...2).contains(age), (s.motionCount ?? 0) > 0 {
+                s.motionPeak = n("motion_peak_mps2")
+                s.motionRMS = n("motion_rms_mps2")
+                s.verticalPeak = n("motion_vertical_peak_mps2")
+                s.verticalRMS = n("motion_vertical_rms_mps2")
+                s.roll = n("roll_deg"); s.pitch = n("pitch_deg"); s.yaw = n("yaw_deg")
+                if let x = n("gyro_x_radps"), let y = n("gyro_y_radps"), let z = n("gyro_z_radps") {
+                    s.rotationRate = sqrt(x * x + y * y + z * z)
+                }
+            }
+            s.barometerAge = n("barometer_age_s")
+            s.barometerTimestamp = text("barometer_timestamp_iso")
+            if s.barometerStatus == "active", let age = s.barometerAge, (0...5).contains(age) {
+                s.pressure = n("phone_pressure_kpa")
+                s.relativeAltitude = n("phone_relative_alt_m")
+            }
+            if let battery = n("phone_battery_pct"), (0...100).contains(battery) { s.phoneBattery = battery }
+            s.phoneBatteryState = text("phone_battery_state")
 
             // --- ECU ---
-            let battery = num(iBatt)
-            let rpm = num(iRPM), speed = num(iSpeed)
+            let battery = freshECU("battery") ? num(iBatt) : nil
+            let rpm = freshECU("rpm") ? num(iRPM) : nil
+            let speed = freshECU("speed") ? num(iSpeed) : nil
             if rpm != nil || speed != nil { seenECU = true }
             // Kunci OFF: ECU masih "mengirim" nilai terakhir tapi tegangan
             // sudah jatuh ke ~0 V (0,077 = 1 step raw) dan odometer jadi 0.
@@ -285,18 +393,18 @@ nonisolated struct TripAnalysis: Sendable {
                 s.rpm = rpm
                 s.speed = speed
                 s.battery = battery
-                s.coolant = num(iCool)
-                s.intake = num(iIntake)
-                s.throttle = num(iThr)
-                s.injection = num(iInj)
+                s.coolant = freshECU("coolant") ? num(iCool) : nil
+                s.intake = freshECU("intake") ? num(iIntake) : nil
+                s.throttle = freshECU("throttle") ? num(iThr) : nil
+                s.injection = freshECU("injection") ? num(iInj) : nil
                 // Odometer 0 atau mundur = nilai tidak valid.
-                if let o = num(iOdo), o > 0, o >= (lastOdo ?? 0) {
+                if freshECU("odometer"), let o = num(iOdo), o > 0, o >= (lastOdo ?? 0) {
                     s.odometer = o
                     lastOdo = o
                 }
-                if let v = num(iFi) { a.maxFiError = max(a.maxFiError, v) }
-                if let v = num(iDTC) { a.maxDTC = max(a.maxDTC, v) }
-                if let v = num(iLamp), v > 0 { a.fiLampOn = true }
+                if freshECU("fiError"), let v = num(iFi) { a.maxFiError = max(a.maxFiError, v) }
+                if freshECU("dtc"), let v = num(iDTC) { a.maxDTC = max(a.maxDTC, v) }
+                if freshECU("fiWarningLamp"), let v = num(iLamp), v > 0 { a.fiLampOn = true }
             }
             if a.vin == nil { a.vin = str(iVIN) }
             if a.modelCode == nil { a.modelCode = str(iModel) }
@@ -304,9 +412,13 @@ nonisolated struct TripAnalysis: Sendable {
             if let v = num(iPower), v > 0 { a.ecuPowerOnHours = v / 3600 }
 
             // --- GPS ---
-            if let lat = num(iLat), let lon = num(iLon), !(lat == 0 && lon == 0) {
+            if let lat = num(iLat), let lon = num(iLon), (-90...90).contains(lat), (-180...180).contains(lon) {
                 let acc = num(iAcc)
-                var ok = (acc ?? 0) <= 30
+                var ok = (acc ?? 0) >= 0 && (acc ?? 0) <= 30
+                if a.hasQualityColumns {
+                    ok = ok && s.gpsStatus == "active" && s.gpsAge.map { (0...5).contains($0) } == true
+                        && acc.map { (0...30).contains($0) } == true
+                }
                 if ok, let p = lastFix, t > p.t {
                     // Lompatan > 70 m/s (252 km/h) = glitch GPS.
                     let d = haversine(p.lat, p.lon, lat, lon)
@@ -315,10 +427,17 @@ nonisolated struct TripAnalysis: Sendable {
                 if ok {
                     s.lat = lat
                     s.lon = lon
-                    s.gpsSpeed = num(iGSpd)
-                    s.altitude = num(iAlt)
+                    if let speed = num(iGSpd), speed >= 0 { s.gpsSpeed = speed }
+                    if !a.hasQualityColumns || s.verticalAccuracy.map({ (0...20).contains($0) }) == true {
+                        s.altitude = num(iAlt)
+                    }
                     s.accuracy = acc
-                    s.gpsFresh = lastFix.map { $0.lat != lat || $0.lon != lon } ?? true
+                    if let timestamp = s.gpsTimestamp {
+                        s.gpsFresh = timestamp != lastGPSTimestamp
+                        lastGPSTimestamp = timestamp
+                    } else {
+                        s.gpsFresh = lastFix.map { $0.lat != lat || $0.lon != lon } ?? true
+                    }
                     lastFix = (lat, lon, t)
                 } else {
                     a.gpsRejected += 1
@@ -329,6 +448,7 @@ nonisolated struct TripAnalysis: Sendable {
         guard !a.samples.isEmpty else { return nil }
         a.samples.sort { $0.t < $1.t }
         a.computeStats()
+        a.buildPhoneAnalytics()
         a.buildSeries()
         a.buildRoute()
         a.buildAnalytics()
@@ -337,11 +457,11 @@ nonisolated struct TripAnalysis: Sendable {
 
     // MARK: - Statistik
 
-    /// Lama satu sampel "berlaku" — jarak ke sampel berikutnya, dibatasi 5 d
+    /// Lama satu sampel "berlaku" — jarak ke sampel berikutnya, dibatasi 1 d
     /// supaya jeda (motor terputus) tidak dihitung sebagai waktu berkendara.
     private func dt(_ i: Int) -> Double {
         guard i + 1 < samples.count else { return 1 }
-        return min(5, max(0, samples[i + 1].t - samples[i].t))
+        return min(1, max(0, samples[i + 1].t - samples[i].t))
     }
 
     private mutating func computeStats() {
@@ -355,7 +475,7 @@ nonisolated struct TripAnalysis: Sendable {
         for (i, s) in samples.enumerated() {
             let d = dt(i)
             if let v = s.rpm { maxRPM = max(maxRPM ?? v, v) }
-            if let v = s.speed {
+            if let v = s.speed ?? s.gpsSpeed {
                 if v > (maxSpeed ?? -1) { maxSpeed = v; maxSpeedTime = s.t }
                 if v > 0 {
                     movingSpeedSum += v * d; movingTime += d
@@ -388,25 +508,17 @@ nonisolated struct TripAnalysis: Sendable {
         // Jarak GPS: hanya titik yang benar-benar update.
         var dist = 0.0
         var prev: TripSample?
-        var alts: [Double] = []
         for s in samples where s.hasGPS && s.gpsFresh {
-            if let p = prev, let la = p.lat, let lo = p.lon, let lb = s.lat, let lob = s.lon {
+            if let p = prev, s.t - p.t <= 5, let la = p.lat, let lo = p.lon, let lb = s.lat, let lob = s.lon {
                 dist += Self.haversine(la, lo, lb, lob)
             }
             prev = s
-            if let alt = s.altitude { alts.append(alt) }
         }
         if samples.filter(\.hasGPS).count > 1 { gpsDistanceKm = dist / 1000 }
+        let alts = samples.compactMap(\.altitude)
         if !alts.isEmpty {
             altitudeMin = alts.min()
             altitudeMax = alts.max()
-            // Histeresis 3 m: tanjakan baru dihitung kalau naik ≥3 m dari
-            // titik rendah terakhir.
-            var gain = 0.0, ref = alts[0]
-            for alt in alts.dropFirst() {
-                if alt - ref >= 3 { gain += alt - ref; ref = alt } else if alt < ref { ref = alt }
-            }
-            altitudeGain = gain
         }
 
         // Selisih speedometer: hanya saat GPS segar, akurat, dan melaju
@@ -416,6 +528,7 @@ nonisolated struct TripAnalysis: Sendable {
         for s in samples {
             guard s.gpsFresh, let g = s.gpsSpeed, let e = s.speed, g >= 15, e >= 15,
                   (s.accuracy ?? 99) <= 5 else { continue }
+            if hasQualityColumns && ((s.speedAccuracy ?? 99) > 1 || (s.gpsAge ?? 99) > 2) { continue }
             errSum += (e - g) / g * 100
             errN += 1
         }
@@ -430,8 +543,34 @@ nonisolated struct TripAnalysis: Sendable {
     static let maxChartPoints = 600
 
     private func series(_ value: (TripSample) -> Double?) -> [ChartPoint] {
-        let raw = samples.compactMap { s in value(s).map { ChartPoint(t: s.t, v: $0) } }
-        return Self.downsample(raw, to: Self.maxChartPoints)
+        var groups: [[ChartPoint]] = [], current: [ChartPoint] = []
+        for s in samples {
+            guard let v = value(s) else {
+                if !current.isEmpty { groups.append(current); current = [] }
+                continue
+            }
+            if let last = current.last, s.t - last.t > 5 { groups.append(current); current = [] }
+            current.append(ChartPoint(t: s.t, v: v))
+        }
+        if !current.isEmpty { groups.append(current) }
+        // Banyak ruas pendek juga harus dibatasi; jangan membuat ribuan
+        // mark saat GPS/motion hilang-muncul setiap detik. Ruas yang dipilih
+        // tetap punya ID terpisah sehingga tidak tersambung melintasi gap.
+        let maxGroups = Self.maxChartPoints / 2
+        let indices = groups.count > maxGroups
+            ? (0..<maxGroups).map { $0 * (groups.count - 1) / (maxGroups - 1) }
+            : Array(groups.indices)
+        let base = indices.reduce(0) { $0 + min(2, groups[$1].count) }
+        let weights = indices.reduce(0) { $0 + max(0, groups[$1].count - 2) }
+        let remaining = Self.maxChartPoints - base
+        return indices.flatMap { i in
+            let points = groups[i]
+            let extra = weights > 0 ? remaining * max(0, points.count - 2) / weights : 0
+            let budget = min(2, points.count) + extra
+            return Self.downsample(points, to: budget).map { point in
+                var p = point; p.segment = i; return p
+            }
+        }
     }
 
     /// Rata-rata per ember waktu, tapi kalau ember berisi puncak/lembah yang
@@ -442,16 +581,15 @@ nonisolated struct TripAnalysis: Sendable {
         let size = Double(pts.count) / Double(n)
         var out: [ChartPoint] = []
         out.reserveCapacity(n)
-        var start = 0.0
-        while Int(start) < pts.count {
-            let lo = Int(start), hi = min(pts.count, Int(start + size))
+        for bucketIndex in 0..<n {
+            let lo = Int(Double(bucketIndex) * size)
+            let hi = min(pts.count, Int(Double(bucketIndex + 1) * size))
             let bucket = pts[lo..<max(hi, lo + 1)]
             let mean = bucket.reduce(0) { $0 + $1.v } / Double(bucket.count)
             let mx = bucket.max { $0.v < $1.v }!, mn = bucket.min { $0.v < $1.v }!
             let pick = (mx.v - mean) >= (mean - mn.v) ? mx : mn
             let t = bucket[bucket.startIndex + bucket.count / 2].t
-            out.append(ChartPoint(t: t, v: abs(pick.v - mean) > 0.15 * max(abs(mean), 1) ? pick.v : mean))
-            start += size
+            out.append(ChartPoint(t: t, v: abs(pick.v - mean) > 0.15 * max(abs(mean), 1) ? pick.v : mean, segment: pick.segment))
         }
         return out
     }
@@ -465,6 +603,14 @@ nonisolated struct TripAnalysis: Sendable {
         intakeSeries = series(\.intake)
         batterySeries = series(\.battery)
         altitudeSeries = series { $0.gpsFresh ? $0.altitude : nil }
+        accelerationSeries = series(\.acceleration)
+        motionPeakSeries = series(\.motionPeak)
+        verticalRMSSeries = series(\.verticalRMS)
+        phoneBatterySeries = series(\.phoneBattery)
+        relativeAltitudeSeries = series(\.relativeAltitude)
+        pressureSeries = series(\.pressure)
+        rollSeries = series(\.roll); pitchSeries = series(\.pitch); yawSeries = series(\.yaw)
+        rotationSeries = series(\.rotationRate)
     }
 
     // MARK: - Rute
@@ -484,16 +630,26 @@ nonisolated struct TripAnalysis: Sendable {
         }
         routeSpeedScale = max(20, (smooth.max() ?? 0).rounded(.up))
         let stride = max(1, Int((Double(fixes.count) / Double(Self.maxRoutePoints)).rounded(.up)))
-        var pts: [RoutePoint] = []
-        for i in Swift.stride(from: 0, to: fixes.count, by: stride) {
-            pts.append(point(fixes[i], smooth[i]))
+        var sourceSegments = [0]
+        var selected = Set(Swift.stride(from: 0, to: fixes.count, by: stride))
+        selected.insert(fixes.count - 1)
+        for i in 1..<fixes.count {
+            let gap = fixes[i].t - fixes[i - 1].t > 5
+            sourceSegments.append(sourceSegments[i - 1] + (gap ? 1 : 0))
+            if gap { selected.insert(i - 1); selected.insert(i) }
         }
-        if let last = fixes.last, pts.last?.t != last.t { pts.append(point(last, smooth[fixes.count - 1])) }
+        // Jeda ditentukan SEBELUM downsampling, bukan dari selisih waktu
+        // titik hasil stride (yang bisa jauh terpisah pada rekaman panjang).
+        let pts = selected.sorted().map { point(fixes[$0], smooth[$0], segment: sourceSegments[$0]) }
         route = pts
 
         var segs: [RouteSegment] = []
         var cur: [RoutePoint] = [pts[0]]
         for p in pts.dropFirst() {
+            if p.segment != cur.last!.segment {
+                if cur.count > 1 { segs.append(RouteSegment(id: segs.count, level: cur[0].level, points: cur)) }
+                cur = [p]; continue
+            }
             cur.append(p)
             if p.level != cur[0].level {
                 segs.append(RouteSegment(id: segs.count, level: cur[0].level, points: cur))
@@ -504,10 +660,10 @@ nonisolated struct TripAnalysis: Sendable {
         routeSegments = segs
     }
 
-    private func point(_ s: TripSample, _ speed: Double) -> RoutePoint {
+    private func point(_ s: TripSample, _ speed: Double, segment: Int = 0) -> RoutePoint {
         let norm = min(1, max(0, speed / routeSpeedScale))
         let level = min(Self.speedLevels - 1, Int(norm * Double(Self.speedLevels)))
-        return RoutePoint(t: s.t, lat: s.lat!, lon: s.lon!, speed: speed, level: level)
+        return RoutePoint(t: s.t, lat: s.lat!, lon: s.lon!, speed: speed, level: level, segment: segment)
     }
 
     // MARK: - Analisis berkendara
@@ -525,10 +681,11 @@ nonisolated struct TripAnalysis: Sendable {
             stopStart = nil
         }
         for (i, s) in samples.enumerated() {
+            if i > 0 && s.t - samples[i - 1].t > 2 { closeStop(i - 1) }
             let v = s.speed ?? s.gpsSpeed.map { $0 < 2 ? 0 : $0 }
             if v == 0 {
                 if stopStart == nil { stopStart = i }
-            } else if v != nil {
+            } else {
                 closeStop(i)
             }
         }

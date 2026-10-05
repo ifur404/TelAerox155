@@ -38,7 +38,7 @@ final class SessionRecorder: ObservableObject {
 
         var subtitle: String {
             switch self {
-            case .csv: return "RPM, kecepatan, suhu, aki, GPS — 1 baris/detik (CSV). Bisa dibuka di Excel/Sheets."
+            case .csv: return "Motor + GPS, gerakan, elevasi, baterai iPhone dan kualitas data — CSV per detik."
             case .bleRaw: return "Semua frame TX/RX mentah (TXT) buat analisa protokol. Kredensial & VIN disensor."
             }
         }
@@ -74,6 +74,8 @@ final class SessionRecorder: ObservableObject {
     /// Terisi kalau rekaman terakhir berhenti KARENA limit (bukan ditekan
     /// user) — ditampilkan sebagai pesan info di UI.
     @Published private(set) var stopReason: String?
+    /// Dibekukan saat start agar perubahan posisi HP tidak mencampur satu sesi.
+    private(set) var phonePlacement: PhonePlacement = .unknown
 
     private var fileHandle: FileHandle?
     /// Kapan metadata sesi aktif terakhir disimpan ke indeks — di-throttle
@@ -86,7 +88,29 @@ final class SessionRecorder: ObservableObject {
     private let maxBytes = 20 * 1024 * 1024      // 20 MB
     private let maxDuration: TimeInterval = 6 * 3600   // 6 jam
 
-    private static let csvHeader = "timestamp_iso,elapsed_s,rpm,speed_kmh,battery_v,coolant_c,intake_c,throttle_deg,baro_kpa,fiError,dtc,fiWarningLamp,injection_cc,odometer_km,ecuPowerOnTime_s,ignOnCount,vin,modelCode,gps_lat,gps_lon,gps_speed_kmh,gps_alt_m,gps_accuracy_m"
+    static let ecuFields: [(column: String, key: String)] = [
+        ("rpm", "rpm"), ("speed_kmh", "speed"), ("battery_v", "battery"),
+        ("coolant_c", "coolant"), ("intake_c", "intake"), ("throttle_deg", "throttle"),
+        ("baro_kpa", "baro"), ("fiError", "fiError"), ("dtc", "dtc"),
+        ("fiWarningLamp", "fiWarningLamp"), ("injection_cc", "injection"),
+        ("odometer_km", "odometer"), ("ecuPowerOnTime_s", "ecuPowerOnTime"), ("ignOnCount", "ignOnCount")
+    ]
+    static let csvColumns = ["timestamp_iso", "elapsed_s"] + ecuFields.map(\.column) + [
+        "vin", "modelCode", "gps_lat", "gps_lon", "gps_speed_kmh", "gps_alt_m", "gps_accuracy_m",
+        "schema_version", "ble_state", "app_state"
+    ] + ecuFields.map { "ecu_\($0.key)_age_s" } + [
+        "gps_timestamp_iso", "gps_age_s", "gps_vertical_accuracy_m", "gps_speed_accuracy_mps",
+        "gps_course_deg", "gps_course_accuracy_deg", "gps_status", "gps_authorization", "gps_precise",
+        "motion_timestamp_iso", "motion_uptime_s", "motion_age_s", "motion_status", "motion_samples", "motion_span_s",
+        "motion_ax_mps2", "motion_ay_mps2", "motion_az_mps2",
+        "motion_mean_ax_mps2", "motion_mean_ay_mps2", "motion_mean_az_mps2",
+        "motion_peak_mps2", "motion_rms_mps2", "motion_vertical_peak_mps2", "motion_vertical_rms_mps2",
+        "gravity_x_g", "gravity_y_g", "gravity_z_g",
+        "gyro_x_radps", "gyro_y_radps", "gyro_z_radps", "roll_deg", "pitch_deg", "yaw_deg",
+        "attitude_qw", "attitude_qx", "attitude_qy", "attitude_qz",
+        "phone_pressure_kpa", "phone_relative_alt_m", "barometer_timestamp_iso", "barometer_uptime_s", "barometer_age_s", "barometer_status",
+        "phone_battery_pct", "phone_battery_state", "phone_low_power", "phone_thermal_state", "phone_placement"
+    ]
 
     /// Dengan pecahan detik (bukan default `ISO8601DateFormatter()` yang
     /// membulatkan ke detik) — tanpa ini, dua baris yang jaraknya < 1 detik
@@ -124,7 +148,7 @@ final class SessionRecorder: ObservableObject {
     /// lama di background atau di-kill sistem sebelum sempat di-stop manual —
     /// tmp/ bisa dibersihkan iOS kapan saja.
     @discardableResult
-    func start(format: Format) -> URL? {
+    func start(format: Format, placement: PhonePlacement = .unknown) -> URL? {
         stop()   // jaga-jaga kalau ada rekaman lama yang belum ditutup
         guard let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
             return nil
@@ -145,9 +169,10 @@ final class SessionRecorder: ObservableObject {
         self.lineCount = 0
         self.startedAt = Date()
         self.stopReason = nil
+        self.phonePlacement = placement
         self.isRecording = true
         if format == .csv {
-            write(Self.csvHeader + "\n", countsAsLine: false)
+            write(CSVCodec.row(Self.csvColumns) + "\n", countsAsLine: false)
         }
         syncIndex()
         return url
@@ -216,36 +241,85 @@ final class SessionRecorder: ObservableObject {
 
     // MARK: - CSV
 
-    /// Dipanggil dari sampling TelemetryStore (~1 Hz)
-    /// — satu baris per detik, nilai TERDECODE (bukan raw byte). `location`
-    /// nil kalau GPS belum ada fix (mis. baru start, indoor, atau izin belum
-    /// diberikan) — kolom gps_* dikosongkan di baris itu, bukan menghentikan
-    /// rekaman.
+    /// Satu waktu baris untuk semua sumber; timestamp asli dan usia sensor
+    /// disimpan terpisah. Nilai tidak tersedia/basi ditulis kosong, bukan nol.
     func appendCSVRow(snapshot: TelemetrySnapshot, vin: String?, modelCode: String?,
-                       location: CLLocation?) {
+                      location: CLLocation?, bleState: String, phone: PhoneSensorSample,
+                      gpsAuthorization: String, gpsPrecise: Bool, appState: String, at now: Date) {
         guard isRecording, format == .csv, let started = startedAt else { return }
-        let elapsed = Date().timeIntervalSince(started)
-        func v(_ key: String) -> String {
-            guard let d = snapshot.decoded(key) else { return "" }
-            return String(format: "%.3f", d.value)
+        write(Self.csvRow(snapshot: snapshot, vin: vin, modelCode: modelCode, location: location,
+                          bleState: bleState, phone: phone, gpsAuthorization: gpsAuthorization,
+                          gpsPrecise: gpsPrecise, appState: appState, at: now, startedAt: started) + "\n")
+    }
+
+    /// Formatter terpisah dari file handle agar kontrak ekspor bisa diuji
+    /// tanpa menulis rekaman ke folder Documents pengguna.
+    static func csvRow(snapshot: TelemetrySnapshot, vin: String?, modelCode: String?,
+                       location: CLLocation?, bleState: String, phone: PhoneSensorSample,
+                       gpsAuthorization: String, gpsPrecise: Bool, appState: String,
+                       at now: Date, startedAt started: Date) -> String {
+        var fields: [String: String] = [
+            "timestamp_iso": Self.timestampFormatter.string(from: now),
+            "elapsed_s": CSVCodec.number(now.timeIntervalSince(started)),
+            "schema_version": "2", "vin": vin ?? "", "modelCode": modelCode ?? "",
+            "ble_state": bleState, "app_state": appState,
+            "gps_authorization": gpsAuthorization, "gps_precise": gpsPrecise ? "1" : "0",
+            "gps_status": "waiting", "motion_status": phone.motionStatus,
+            "barometer_status": phone.barometerStatus, "phone_battery_state": phone.batteryState,
+            "phone_thermal_state": phone.thermalState, "phone_placement": phone.placement.rawValue
+        ]
+        func put(_ key: String, _ value: Double?) { fields[key] = CSVCodec.number(value) }
+        func valid(_ value: Double) -> Double? { value >= 0 && value.isFinite ? value : nil }
+        for item in Self.ecuFields {
+            let age = snapshot.receivedAt[item.key].map { max(0, now.timeIntervalSince($0)) }
+            put("ecu_\(item.key)_age_s", age)
+            // Counter info kendaraan tidak streaming; usia tetap disimpan.
+            let info = item.key == "ecuPowerOnTime" || item.key == "ignOnCount"
+            if bleState == "streaming", let age, (info || age <= 5) {
+                put(item.column, snapshot.value(item.key))
+            }
         }
-        // GPS: speed/course CoreLocation bernilai negatif kalau tidak valid —
-        // dikosongkan (bukan ditulis -1) supaya tidak salah dibaca sebagai
-        // kecepatan mundur di CSV.
-        let lat = location.map { String(format: "%.6f", $0.coordinate.latitude) } ?? ""
-        let lon = location.map { String(format: "%.6f", $0.coordinate.longitude) } ?? ""
-        let gpsSpeed = location.flatMap { $0.speed >= 0 ? String(format: "%.1f", $0.speed * 3.6) : nil } ?? ""
-        let gpsAlt = location.map { String(format: "%.1f", $0.altitude) } ?? ""
-        let gpsAcc = location.flatMap { $0.horizontalAccuracy >= 0 ? String(format: "%.1f", $0.horizontalAccuracy) : nil } ?? ""
-        let row = [
-            Self.timestampFormatter.string(from: Date()),
-            String(format: "%.1f", elapsed),
-            v("rpm"), v("speed"), v("battery"), v("coolant"), v("intake"),
-            v("throttle"), v("baro"), v("fiError"), v("dtc"), v("fiWarningLamp"),
-            v("injection"), v("odometer"), v("ecuPowerOnTime"), v("ignOnCount"),
-            vin ?? "", modelCode ?? "",
-            lat, lon, gpsSpeed, gpsAlt, gpsAcc
-        ].joined(separator: ",")
-        write(row + "\n")
+        if gpsAuthorization == "denied" || gpsAuthorization == "restricted" { fields["gps_status"] = "denied" }
+        if let location {
+            let age = now.timeIntervalSince(location.timestamp)
+            fields["gps_timestamp_iso"] = Self.timestampFormatter.string(from: location.timestamp)
+            put("gps_age_s", max(0, age))
+            let allowed = gpsAuthorization == "always" || gpsAuthorization == "whenInUse"
+            let fresh = allowed && age >= -1 && age <= 5 && location.horizontalAccuracy >= 0
+            fields["gps_status"] = fresh ? "active" : "stale"
+            if !allowed { fields["gps_status"] = "denied" }
+            if fresh {
+                fields["gps_lat"] = CSVCodec.number(location.coordinate.latitude, decimals: 7)
+                fields["gps_lon"] = CSVCodec.number(location.coordinate.longitude, decimals: 7)
+                put("gps_speed_kmh", valid(location.speed).map { $0 * 3.6 })
+                put("gps_accuracy_m", valid(location.horizontalAccuracy))
+                put("gps_vertical_accuracy_m", valid(location.verticalAccuracy))
+                if location.verticalAccuracy >= 0 { put("gps_alt_m", location.altitude) }
+                put("gps_speed_accuracy_mps", valid(location.speedAccuracy))
+                put("gps_course_deg", valid(location.course))
+                put("gps_course_accuracy_deg", valid(location.courseAccuracy))
+            }
+        }
+        if let m = phone.motion {
+            fields["motion_timestamp_iso"] = Self.timestampFormatter.string(from: now.addingTimeInterval(-m.age))
+            fields["motion_samples"] = String(m.count)
+            put("motion_uptime_s", m.last.uptime)
+            put("motion_age_s", m.age); put("motion_span_s", m.span)
+            put("motion_ax_mps2", m.last.ax); put("motion_ay_mps2", m.last.ay); put("motion_az_mps2", m.last.az)
+            put("motion_mean_ax_mps2", m.meanX); put("motion_mean_ay_mps2", m.meanY); put("motion_mean_az_mps2", m.meanZ)
+            put("motion_peak_mps2", m.peak); put("motion_rms_mps2", m.rms)
+            put("motion_vertical_peak_mps2", m.verticalPeak); put("motion_vertical_rms_mps2", m.verticalRMS)
+            put("gravity_x_g", m.last.gx); put("gravity_y_g", m.last.gy); put("gravity_z_g", m.last.gz)
+            put("gyro_x_radps", m.last.rx); put("gyro_y_radps", m.last.ry); put("gyro_z_radps", m.last.rz)
+            put("roll_deg", m.last.roll); put("pitch_deg", m.last.pitch); put("yaw_deg", m.last.yaw)
+            put("attitude_qw", m.last.qw); put("attitude_qx", m.last.qx); put("attitude_qy", m.last.qy); put("attitude_qz", m.last.qz)
+        }
+        put("phone_pressure_kpa", phone.pressureKPa); put("phone_relative_alt_m", phone.relativeAltitude)
+        put("barometer_age_s", phone.barometerAge)
+        put("barometer_uptime_s", phone.barometerUptime)
+        if let date = phone.barometerTimestamp { fields["barometer_timestamp_iso"] = Self.timestampFormatter.string(from: date) }
+        put("phone_battery_pct", phone.batteryPercent)
+        fields["phone_low_power"] = phone.lowPower.map { $0 ? "1" : "0" } ?? ""
+        return CSVCodec.row(Self.csvColumns.map { fields[$0] ?? "" })
     }
 }

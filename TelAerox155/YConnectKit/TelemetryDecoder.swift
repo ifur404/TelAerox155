@@ -12,9 +12,15 @@ nonisolated public struct DecodedValue: Equatable {
 /// Snapshot telemetri: kumpulan field terdecode dari satu (atau beberapa) frame.
 nonisolated public struct TelemetrySnapshot {
     public private(set) var values: [String: DecodedValue] = [:]
+    /// Waktu penerimaan per field, termasuk saat nilainya tidak berubah.
+    /// Snapshot berisi gabungan frame yang frekuensi pembaruannya berbeda.
+    public private(set) var receivedAt: [String: Date] = [:]
 
-    public mutating func merge(_ decoded: [DecodedValue]) {
-        for v in decoded { values[v.key] = v }
+    public mutating func merge(_ decoded: [DecodedValue], at date: Date = Date()) {
+        for v in decoded {
+            values[v.key] = v
+            receivedAt[v.key] = date
+        }
     }
 
     public func value(_ key: String) -> Double? { values[key]?.value }

@@ -14,6 +14,18 @@ final class LocationProvider: NSObject, ObservableObject, CLLocationManagerDeleg
     @Published private(set) var lastLocation: CLLocation?
     @Published private(set) var isActive = false
 
+    var isPrecise: Bool { manager.accuracyAuthorization == .fullAccuracy }
+    var authorizationName: String {
+        switch authorizationStatus {
+        case .authorizedAlways: return "always"
+        case .authorizedWhenInUse: return "whenInUse"
+        case .denied: return "denied"
+        case .restricted: return "restricted"
+        case .notDetermined: return "notDetermined"
+        @unknown default: return "unknown"
+        }
+    }
+
     private let manager = CLLocationManager()
 
     override init() {

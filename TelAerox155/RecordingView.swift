@@ -21,6 +21,7 @@ struct RecordingView: View {
     @Environment(\.dismiss) private var dismiss
 
     @AppStorage("recordFormat") private var formatRaw: String = SessionRecorder.Format.csv.rawValue
+    @AppStorage("phonePlacement") private var placementRaw: String = PhonePlacement.unknown.rawValue
     @State private var confirmStop = false
     @State private var pendingDelete: RecordingSession?
     @State private var shareURL: URL?
@@ -131,10 +132,19 @@ struct RecordingView: View {
 
             if selectedFormat == .csv {
                 GPSStatusRow(location: location, accent: accent, requestingOnStart: true)
+                Picker("Posisi iPhone", selection: $placementRaw) {
+                    ForEach(PhonePlacement.allCases) { placement in
+                        Text(placement.title).tag(placement.rawValue)
+                    }
+                }
+                .tint(accent)
+                Text("Gerakan dan elevasi ikut direkam jika tersedia dan diizinkan. Analisis guncangan motor memakai posisi holder; orientasi yang dicatat adalah orientasi HP.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
 
             Button {
-                if recorder.start(format: selectedFormat) == nil { startFailed = true }
+                if recorder.start(format: selectedFormat, placement: PhonePlacement(rawValue: placementRaw) ?? .unknown) == nil { startFailed = true }
             } label: {
                 Label("Mulai Rekam", systemImage: "record.circle.fill")
                     .font(.headline)
@@ -145,7 +155,7 @@ struct RecordingView: View {
             }
             .buttonStyle(.plain)
 
-            Text("Tetap jalan walau layar dikunci. Berhenti otomatis setelah 6 jam atau 20 MB. Setiap sesi tersimpan permanen di Riwayat di bawah.")
+            Text("Rekaman tetap berjalan saat layar dikunci selama iOS memberi waktu berjalan lewat GPS/BLE. Jeda sensor ditandai di detail. Berhenti otomatis setelah 6 jam atau 20 MB; tersimpan di Riwayat.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -207,7 +217,9 @@ struct RecordingView: View {
                 .foregroundStyle(store.isActive ? .green : .orange)
             Text(store.isActive
                  ? "Motor terhubung — data langsung masuk begitu mulai."
-                 : "Motor belum terhubung. Rekaman tetap bisa dimulai; data masuk begitu tersambung.")
+                 : (selectedFormat == .csv
+                    ? "Motor belum terhubung. Sensor iPhone tetap bisa direkam; data motor ikut masuk setelah tersambung."
+                    : "Motor belum terhubung. Rekaman tetap bisa dimulai; frame masuk setelah tersambung."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -352,7 +364,7 @@ private struct RecordingLiveCard: View {
 
             if !store.isActive {
                 Text(recorder.format == .csv
-                     ? "Motor tidak terhubung — baris data tidak ditulis sampai tersambung lagi. Timer tetap jalan."
+                     ? "Motor tidak terhubung — sensor iPhone tetap direkam; kolom motor kosong sampai tersambung lagi."
                      : "Motor tidak terhubung — belum ada frame masuk.")
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -604,7 +616,7 @@ struct RecordingDetailView: View {
 
             Section {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                    tile("Durasi", s.duration.map(RecordingFormat.duration) ?? "Berjalan…", icon: "timer")
+                    tile("Durasi", s.duration.map { RecordingFormat.duration($0) } ?? "Berjalan…", icon: "timer")
                     tile("Ukuran", RecordingFormat.size(isActive ? recorder.bytesWritten : s.bytes), icon: "internaldrive")
                     tile(s.format == .csv ? "Baris data" : "Frame",
                          lineCountText(s), icon: "list.number")
@@ -616,7 +628,6 @@ struct RecordingDetailView: View {
             }
             .listRowBackground(Color.clear)
             .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
-
 
             Section {
                 Button {
@@ -677,8 +688,40 @@ struct RecordingDetailView: View {
             .listRowBackground(Color.clear)
             .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
 
+            Section("Kualitas rekaman") {
+                TripQualityCard(analysis: a, playback: playback)
+            }
+            .listRowBackground(RecordingPalette.card)
+
+            if a.hasPhoneColumns {
+                Section("iPhone & elevasi") {
+                    TripPhoneSummary(analysis: a)
+                }
+                .listRowBackground(RecordingPalette.card)
+
+                Section("Sensor pada waktu replay") {
+                    TripSensorReadout(playback: playback)
+                }
+                .listRowBackground(RecordingPalette.card)
+            }
+
+            if a.elevationProfile.count > 1 {
+                Section {
+                    TripElevationProfile(analysis: a, playback: playback)
+                }
+                .listRowBackground(RecordingPalette.card)
+            }
+
+            if a.hasPhoneColumns || !a.accelerationSeries.isEmpty {
+                Section("Kejadian perjalanan") {
+                    TripEventsCard(analysis: a, playback: playback)
+                }
+                .listRowBackground(RecordingPalette.card)
+            }
+
             Section {
                 TripTimelineCharts(analysis: a, playback: playback)
+                TripPhoneCharts(analysis: a, playback: playback)
             } header: {
                 Text("Grafik")
             } footer: {
@@ -742,7 +785,7 @@ struct RecordingDetailView: View {
         } else {
             Section {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Belum ada baris data — motor mungkin tidak terhubung selama rekaman.")
+                    Text("Belum ada baris data yang dapat dianalisis.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Button {
