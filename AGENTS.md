@@ -1,48 +1,42 @@
-# Panduan Agent untuk repo ini
+# Panduan kontribusi dan agent
 
-## Ruang lingkup
+## Ruang lingkup proyek
 
-Aplikasi iOS (Swift/SwiftUI) yang membaca telemetri motor Yamaha lewat BLE.
-`YConnectKit/` adalah modul protokol BLE murni (tanpa SwiftUI); `TelemetryStore`
-dan `ContentView` adalah lapisan UI di atasnya.
+Aplikasi iOS SwiftUI ini membaca telemetri motor Yamaha melalui Bluetooth LE. `YConnectKit/`
+menangani protokol BLE tanpa dependensi SwiftUI; `TelemetryStore` dan `ContentView` menjadi lapisan
+aplikasi.
 
-## Kontrak keamanan — jangan dilanggar
+## Batas komunikasi kendaraan
 
-Client ini **read-only**. Satu-satunya byte yang boleh ditulis ke motor:
+Client bersifat **read-only**. Byte yang boleh ditulis ke motor dibatasi pada:
 
-- frame auth `0xAA` (dan respons `0x5A`), dan
-- frame keep-alive periodik `0xA6` (058A/058B), sesuai `KeepAlivePolicy`,
-  identik dengan yang dikirim aplikasi resmi Yamaha Motor On.
+- Frame autentikasi `0xAA`; respons `0x5A` hanya diterima dari motor.
+- Frame keep-alive periodik `0xA6` (`058A`/`058B`) sesuai `KeepAlivePolicy`, dengan format yang sama
+  seperti aplikasi resmi Yamaha Motor On.
 
-Jangan menambahkan write lain (request FFD, kontrol kendaraan, dll) tanpa
-persetujuan eksplisit dari pemilik repo — ini bukan sekadar konvensi kode,
-tapi batasan keamanan yang disengaja.
+Jangan menambahkan write lain, termasuk request FFD atau perintah kontrol kendaraan, tanpa
+persetujuan eksplisit pemilik repository. Batas ini adalah persyaratan keamanan proyek.
 
-## Kredensial
+## Kredensial dan data pribadi
 
-`TelAerox155/secrets.local.json` berisi kredensial motor dan sudah masuk
-`.gitignore`. Jangan pernah commit, print, atau kirim isi file ini ke layanan
-eksternal.
+File lokal `TelAerox155/secrets.local.json`, jika ada, berisi kredensial kendaraan dan diabaikan
+oleh Git. Jangan commit, mencetak, atau mengirim isinya ke layanan eksternal. Perlakukan QR pairing,
+VIN, CCUID, UUID ponsel, dan capture BLE mentah sebagai data sensitif.
 
 ## Konvensi kode
 
-- Banyak komentar & dokumentasi inline dalam Bahasa Indonesia — pertahankan
-  bahasa yang sama saat menambah/mengubah komentar di area tersebut.
-- Beberapa tipe di `YConnectKit` sengaja ditandai `nonisolated` karena
-  dibandingkan/dipakai dari closure `Timer` `@Sendable` di bawah
-  `SWIFT_DEFAULT_ACTOR_ISOLATION=MainActor` — jangan hapus anotasi ini tanpa
-  memahami alasannya (lihat komentar di `YConnectClient.swift` dan
-  `ClientState`/`KeepAlivePolicy`).
-- `YConnectClientDelegate` tidak `MainActor`-isolated secara eksplisit, tapi
-  aman selama `YConnectClient` dibuat dengan `queue: nil` (delegate dipanggil
-  di main queue). Kalau menambahkan queue custom, method delegate harus
-  di-`nonisolated` + hop manual ke `MainActor`.
+- Pertahankan Bahasa Indonesia pada komentar dan dokumentasi inline di area yang menggunakannya.
+- Beberapa tipe `YConnectKit` sengaja memakai anotasi `nonisolated` karena digunakan atau
+  dibandingkan dari closure `Timer` `@Sendable` di bawah `SWIFT_DEFAULT_ACTOR_ISOLATION=MainActor`.
+  Jangan menghapus anotasi tanpa meninjau komentar di `YConnectClient.swift`, `ClientState`, dan
+  `KeepAlivePolicy`.
+- `YConnectClientDelegate` tidak diisolasi secara eksplisit ke `MainActor`, tetapi aman selama
+  `YConnectClient` dibuat dengan `queue: nil` karena delegate dipanggil di main queue. Jika memakai
+  queue kustom, method delegate perlu `nonisolated` dan perpindahan eksplisit ke `MainActor`.
 
-## Sebelum commit/push
+## Sebelum commit atau push
 
-- Pastikan project build tanpa error/warning baru di Xcode.
-- Jangan commit `secrets.local.json`, `build/`, `DerivedData/`, atau file
-  `xcuserdata`/`.DS_Store` — sudah dicakup `.gitignore`, tapi cek ulang
-  `git status` sebelum `git add`.
-- Tulis pesan commit dalam Bahasa Indonesia atau Inggris, jelas dan spesifik
-  soal *kenapa* perubahan dilakukan (bukan cuma daftar file yang diubah).
+- Build project di Xcode dan pastikan tidak ada error atau warning baru.
+- Tinjau `git status` sebelum staging. Jangan commit `secrets.local.json`, `build/`, `DerivedData/`,
+  `xcuserdata`, atau `.DS_Store`.
+- Tulis pesan commit dalam Bahasa Indonesia atau Inggris. Jelaskan alasan perubahan secara spesifik.
