@@ -379,17 +379,33 @@ struct TripPlaybackBar: View {
     var body: some View {
         VStack(spacing: 8) {
             HStack(spacing: 8) {
+                if !playback.analysis.speedSeries.isEmpty || !playback.analysis.gpsSpeedSeries.isEmpty {
                 readout(value: fmt(playback.sample?.speed ?? playback.sample?.gpsSpeed, "%.0f"), unit: "km/h", color: TripPalette.ecu)
+                }
+                if !playback.analysis.rpmSeries.isEmpty {
                 readout(value: fmt(playback.sample?.rpm, "%.0f"), unit: "rpm", color: TripPalette.rpm)
+                }
+                if !playback.analysis.throttleSeries.isEmpty {
                 readout(value: fmt(playback.sample?.throttle, "%.1f"), unit: "° gas", color: TripPalette.throttle)
+                }
+                if !playback.analysis.coolantSeries.isEmpty {
                 readout(value: fmt(playback.sample?.coolant, "%.0f"), unit: "°C", color: TripPalette.coolant)
+                }
             }
             if playback.analysis.hasPhoneColumns {
                 HStack(spacing: 8) {
+                if !playback.analysis.accelerationSeries.isEmpty {
                     readout(value: fmt(playback.sample?.acceleration, "%+.1f"), unit: "m/s²", color: .orange)
+                }
+                if !playback.analysis.motionPeakSeries.isEmpty {
                     readout(value: fmt(playback.sample?.motionPeak, "%.1f"), unit: "puncak · m/s²", color: .pink)
+                }
+                if playback.analysis.availableColumns.contains("gps_age_s") {
                     readout(value: fmt(playback.sample?.gpsAge, "%.1f"), unit: "usia GPS · s", color: .white)
+                }
+                if !playback.analysis.phoneBatterySeries.isEmpty {
                     readout(value: fmt(playback.sample?.phoneBattery, "%.0f"), unit: "% iPhone", color: .green)
+                }
                 }
             }
             HStack(spacing: 10) {

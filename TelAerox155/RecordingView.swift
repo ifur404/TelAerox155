@@ -21,6 +21,7 @@ struct RecordingView: View {
     @Environment(\.dismiss) private var dismiss
 
     @AppStorage("recordFormat") private var formatRaw: String = SessionRecorder.Format.csv.rawValue
+    @AppStorage("recordPhoneSensors") private var includePhone = true
     @AppStorage("phonePlacement") private var placementRaw: String = PhonePlacement.unknown.rawValue
     @State private var confirmStop = false
     @State private var pendingDelete: RecordingSession?
@@ -131,6 +132,9 @@ struct RecordingView: View {
             connectionHint
 
             if selectedFormat == .csv {
+                Toggle("Sertakan sensor iPhone", isOn: $includePhone).tint(accent)
+            }
+            if selectedFormat == .csv && includePhone {
                 GPSStatusRow(location: location, accent: accent, requestingOnStart: true)
                 Picker("Posisi iPhone", selection: $placementRaw) {
                     ForEach(PhonePlacement.allCases) { placement in
@@ -144,7 +148,7 @@ struct RecordingView: View {
             }
 
             Button {
-                if recorder.start(format: selectedFormat, placement: PhonePlacement(rawValue: placementRaw) ?? .unknown) == nil { startFailed = true }
+                if recorder.start(format: selectedFormat, includesPhoneSensors: includePhone, placement: PhonePlacement(rawValue: placementRaw) ?? .unknown) == nil { startFailed = true }
             } label: {
                 Label("Mulai Rekam", systemImage: "record.circle.fill")
                     .font(.headline)
@@ -217,7 +221,7 @@ struct RecordingView: View {
                 .foregroundStyle(store.isActive ? .green : .orange)
             Text(store.isActive
                  ? "Motor terhubung — data langsung masuk begitu mulai."
-                 : (selectedFormat == .csv
+                 : (selectedFormat == .csv && includePhone
                     ? "Motor belum terhubung. Sensor iPhone tetap bisa direkam; data motor ikut masuk setelah tersambung."
                     : "Motor belum terhubung. Rekaman tetap bisa dimulai; frame masuk setelah tersambung."))
                 .font(.caption)
@@ -363,7 +367,7 @@ private struct RecordingLiveCard: View {
             }
 
             if !store.isActive {
-                Text(recorder.format == .csv
+                Text(recorder.format == .csv && recorder.includesPhoneSensors
                      ? "Motor tidak terhubung — sensor iPhone tetap direkam; kolom motor kosong sampai tersambung lagi."
                      : "Motor tidak terhubung — belum ada frame masuk.")
                     .font(.caption)
@@ -371,7 +375,7 @@ private struct RecordingLiveCard: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if recorder.format == .csv {
+            if recorder.format == .csv && recorder.includesPhoneSensors {
                 GPSStatusRow(location: location, accent: accent, requestingOnStart: false)
             }
 

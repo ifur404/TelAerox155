@@ -146,6 +146,7 @@ nonisolated struct TripAnalysis: Sendable {
     var rowsAfterKeyOff = 0
     /// Titik GPS yang dibuang (akurasi > 30 m atau lompatan mustahil).
     var gpsRejected = 0
+    var availableColumns: Set<String> = []
     var hasPhoneColumns = false
     var hasQualityColumns = false
     var recordedSeconds = 0.0
@@ -316,6 +317,7 @@ nonisolated struct TripAnalysis: Sendable {
         guard iT != nil else { return nil }
 
         var a = TripAnalysis()
+        a.availableColumns = Set(header)
         a.hasPhoneColumns = col("motion_status") != nil
         a.hasQualityColumns = col("ble_state") != nil
         var seenECU = false

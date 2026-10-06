@@ -8,16 +8,13 @@ struct PairingView: View {
     @StateObject private var discovery = PairingDiscovery()
     @Environment(\.dismiss) private var dismiss
     @State private var selected: NearbyPairingDevice?
-    @State private var method = Method.qr
     @State private var qr = ""
-    @State private var digits = ""
     @State private var error: String?
     @State private var scanning = false
+    @State private var torchOn = false
+    @State private var manualQR = false
     @State private var confirmForget = false
 
-    private enum Method: String, CaseIterable {
-        case qr = "QR", vin = "4 digit rangka"
-    }
     private var isTrying: Bool { store.pairingAttempt == .connecting }
     private var isPaired: Bool { store.pairingAttempt == .paired }
 
@@ -37,17 +34,12 @@ struct PairingView: View {
                         Button("Pilih motor lain") {
                             self.selected = nil
                             qr = ""
-                            digits = ""
                             error = nil
                             store.resetPairingAttempt()
                             discovery.start()
                         }.disabled(isTrying)
                     }
                     Section("2 · Verifikasi motor") {
-                        Picker("Metode", selection: $method) {
-                            ForEach(Method.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                        }.pickerStyle(.segmented)
-                        if method == .qr {
                             Text("Scan QR Y-Connect milik motor yang dipilih.")
                             Button("Scan QR", systemImage: "qrcode.viewfinder") {
                                 Task { await openCamera() }
@@ -55,15 +47,7 @@ struct PairingView: View {
                             SecureField("Atau tempel isi QR", text: $qr)
                                 .textInputAutocapitalization(.never).autocorrectionDisabled()
                             if !qr.isEmpty { Label("QR siap diperiksa", systemImage: "qrcode") }
-                        } else {
-                            TextField("4 digit nomor rangka", text: $digits)
-                                .keyboardType(.numberPad)
-                                .onChange(of: digits) { _, value in
-                                    digits = String(value.filter { $0.isASCII && $0.isNumber }.prefix(4))
-                                }
-                            Text("Jalur 4 digit belum bisa dipakai: aplikasi resmi mengambil kredensial lewat akun Yamaha. Integrasi akun itu belum tersedia di TelAerox. Gunakan QR untuk pairing saat ini.")
-                                .font(.footnote)
-                        }
+
                     }.disabled(isTrying)
                     Section("3 · Hubungkan") {
                         if isTrying {
@@ -71,7 +55,7 @@ struct PairingView: View {
                             Button("Batalkan", role: .cancel) { store.cancelPairing() }
                         } else {
                             Button("Coba hubungkan") { tryConnect(selected) }
-                                .disabled(method != .qr || qr.isEmpty)
+                                .disabled(qr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
                         Text("Motor baru ditandai paired setelah menerima autentikasi. Jika gagal, data pairing baru tidak disimpan.")
                             .font(.footnote)
@@ -132,6 +116,34 @@ struct PairingView: View {
                         error = "Kamera tidak tersedia. Coba lagi atau tempel isi QR."
                     }
                     .ignoresSafeArea(edges: .bottom)
+                    .navigationTitle("Scan QR Motor")
+                    .safeAreaInset(edge: .bottom) {
+                        VStack(spacing: 12) {
+                            Button(torchOn ? "Matikan flash" : "Nyalakan flash", systemImage: torchOn ? "flashlight.on.fill" : "flashlight.off.fill") { toggleTorch() }
+                            Button("Input / tempel isi QR", systemImage: "keyboard") { manualQR = true }
+                        }.padding().frame(maxWidth: .infinity).background(.ultraThinMaterial)
+                    }
+                    .onDisappear { setTorch(false) }
+                    .sheet(isPresented: $manualQR) {
+                        NavigationStack {
+                            Form {
+                                Section("Isi QR Y-Connect") {
+                                    SecureField("Tempel atau ketik isi QR", text: $qr)
+                                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                                    Text("Masukkan seluruh isi QR, bukan nomor rangka.").font(.footnote)
+                                }
+                            }
+                            .navigationTitle("Input QR")
+                            .toolbar {
+                                ToolbarItem(placement: .confirmationAction) {
+                                    Button("Gunakan QR") { manualQR = false; scanning = false; error = nil }
+                                        .disabled(qr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                }
+                                ToolbarItem(placement: .cancellationAction) { Button("Batal") { manualQR = false } }
+                            }
+                        }
+                    }
+
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Batal") { scanning = false } } }
                 }
             }
@@ -145,9 +157,19 @@ struct PairingView: View {
                 discovery.stop()
                 store.cancelPairing()
             }
-            .onChange(of: method) { _, _ in error = nil; store.resetPairingAttempt() }
             .interactiveDismissDisabled(isTrying)
         }
+    }
+
+    private func toggleTorch() { setTorch(!torchOn) }
+    private func setTorch(_ enabled: Bool) {
+        guard let device = AVCaptureDevice.default(for: .video), device.hasTorch else { return }
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            device.torchMode = enabled ? .on : .off
+            torchOn = enabled
+        } catch { self.error = "Flash tidak tersedia saat ini." }
     }
 
     private func tryConnect(_ device: NearbyPairingDevice) {

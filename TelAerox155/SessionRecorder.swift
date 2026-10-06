@@ -38,7 +38,7 @@ final class SessionRecorder: ObservableObject {
 
         var subtitle: String {
             switch self {
-            case .csv: return "Motor + GPS, gerakan, elevasi, baterai iPhone dan kualitas data — CSV per detik."
+            case .csv: return "Telemetri motor per detik dalam CSV; sensor iPhone bisa disertakan."
             case .bleRaw: return "Semua frame TX/RX mentah (TXT) buat analisa protokol. Kredensial & VIN disensor."
             }
         }
@@ -75,6 +75,7 @@ final class SessionRecorder: ObservableObject {
     /// user) — ditampilkan sebagai pesan info di UI.
     @Published private(set) var stopReason: String?
     /// Dibekukan saat start agar perubahan posisi HP tidak mencampur satu sesi.
+    private(set) var includesPhoneSensors = true
     private(set) var phonePlacement: PhonePlacement = .unknown
 
     private var fileHandle: FileHandle?
@@ -112,6 +113,17 @@ final class SessionRecorder: ObservableObject {
         "phone_battery_pct", "phone_battery_state", "phone_low_power", "phone_thermal_state", "phone_placement"
     ]
 
+    /// Kolom iPhone dihilangkan sepenuhnya untuk sesi motor saja.
+    static func columns(includingPhone: Bool) -> [String] {
+        includingPhone ? csvColumns : csvColumns.filter {
+            !$0.hasPrefix("gps_") && !$0.hasPrefix("motion_") && !$0.hasPrefix("phone_")
+                && !$0.hasPrefix("barometer_") && !$0.hasPrefix("gravity_")
+                && !$0.hasPrefix("gyro_") && !$0.hasPrefix("attitude_")
+                && !["roll_deg", "pitch_deg", "yaw_deg"].contains($0)
+        }
+    }
+    private var activeCSVColumns: [String] { Self.columns(includingPhone: includesPhoneSensors) }
+
     /// Dengan pecahan detik (bukan default `ISO8601DateFormatter()` yang
     /// membulatkan ke detik) — tanpa ini, dua baris yang jaraknya < 1 detik
     /// (mis. 12:00:00.98 lalu 12:00:01.02) bisa tampak punya timestamp SAMA
@@ -148,7 +160,7 @@ final class SessionRecorder: ObservableObject {
     /// lama di background atau di-kill sistem sebelum sempat di-stop manual —
     /// tmp/ bisa dibersihkan iOS kapan saja.
     @discardableResult
-    func start(format: Format, placement: PhonePlacement = .unknown) -> URL? {
+    func start(format: Format, includesPhoneSensors: Bool = true, placement: PhonePlacement = .unknown) -> URL? {
         stop()   // jaga-jaga kalau ada rekaman lama yang belum ditutup
         guard let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
             return nil
@@ -169,10 +181,11 @@ final class SessionRecorder: ObservableObject {
         self.lineCount = 0
         self.startedAt = Date()
         self.stopReason = nil
+        self.includesPhoneSensors = includesPhoneSensors
         self.phonePlacement = placement
         self.isRecording = true
         if format == .csv {
-            write(CSVCodec.row(Self.csvColumns) + "\n", countsAsLine: false)
+            write(CSVCodec.row(activeCSVColumns) + "\n", countsAsLine: false)
         }
         syncIndex()
         return url
@@ -249,7 +262,7 @@ final class SessionRecorder: ObservableObject {
         guard isRecording, format == .csv, let started = startedAt else { return }
         write(Self.csvRow(snapshot: snapshot, vin: vin, modelCode: modelCode, location: location,
                           bleState: bleState, phone: phone, gpsAuthorization: gpsAuthorization,
-                          gpsPrecise: gpsPrecise, appState: appState, at: now, startedAt: started) + "\n")
+                          gpsPrecise: gpsPrecise, appState: appState, at: now, startedAt: started, columns: activeCSVColumns) + "\n")
     }
 
     /// Formatter terpisah dari file handle agar kontrak ekspor bisa diuji
@@ -257,7 +270,7 @@ final class SessionRecorder: ObservableObject {
     static func csvRow(snapshot: TelemetrySnapshot, vin: String?, modelCode: String?,
                        location: CLLocation?, bleState: String, phone: PhoneSensorSample,
                        gpsAuthorization: String, gpsPrecise: Bool, appState: String,
-                       at now: Date, startedAt started: Date) -> String {
+                       at now: Date, startedAt started: Date, columns: [String] = csvColumns) -> String {
         var fields: [String: String] = [
             "timestamp_iso": Self.timestampFormatter.string(from: now),
             "elapsed_s": CSVCodec.number(now.timeIntervalSince(started)),
@@ -320,6 +333,6 @@ final class SessionRecorder: ObservableObject {
         if let date = phone.barometerTimestamp { fields["barometer_timestamp_iso"] = Self.timestampFormatter.string(from: date) }
         put("phone_battery_pct", phone.batteryPercent)
         fields["phone_low_power"] = phone.lowPower.map { $0 ? "1" : "0" } ?? ""
-        return CSVCodec.row(Self.csvColumns.map { fields[$0] ?? "" })
+        return CSVCodec.row(columns.map { fields[$0] ?? "" })
     }
 }

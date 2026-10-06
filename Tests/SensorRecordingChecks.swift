@@ -46,6 +46,15 @@ struct SensorRecordingChecks {
     }
 
     static func main() {
+        let motorColumns = SessionRecorder.columns(includingPhone: false)
+        let motorCSV = CSVCodec.row(motorColumns) + "\n" + [row(0, speed: 20), row(1, speed: 25)].map { r in
+            CSVCodec.row(motorColumns.map { r[$0] ?? "" })
+        }.joined(separator: "\n")
+        let motorOnly = TripAnalysis.parse(motorCSV)!
+        expect(!motorOnly.hasPhoneColumns && !motorOnly.availableColumns.contains("gps_lat"), "Motor saja tidak memiliki kolom sensor iPhone")
+        expect(motorOnly.maxSpeed == 25, "Telemetri tetap terbaca tanpa kolom iPhone")
+        expect(!motorOnly.gaps.contains { $0.kind == .gps || $0.kind == .motion }, "Sensor yang tidak direkam bukan jeda data")
+
         var accumulator = MotionAccumulator()
         for i in 0..<50 { accumulator.append(reading(Double(i) / 50, z: i == 25 ? 10 : 0)) }
         let motion = accumulator.take(at: 1)!

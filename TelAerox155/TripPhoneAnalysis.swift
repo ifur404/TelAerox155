@@ -130,7 +130,7 @@ nonisolated extension TripAnalysis {
             samples[i].distanceKm = distance / 1000
         }
         if hasQualityColumns { appendGaps(kind: .ble) { $0.bleState != "streaming" } }
-        appendGaps(kind: .gps) { !$0.hasGPS }
+        if availableColumns.contains("gps_lat") { appendGaps(kind: .gps) { !$0.hasGPS } }
         if hasPhoneColumns { appendGaps(kind: .motion) { $0.motionPeak == nil } }
         gaps.sort { $0.start < $1.start }
         buildElevation()
