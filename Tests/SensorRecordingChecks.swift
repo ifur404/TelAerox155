@@ -47,6 +47,7 @@ struct SensorRecordingChecks {
 
     static func main() {
         checkBackgroundRecording()
+        checkWorkScheduling()
         let tripColumns = SessionRecorder.columns(includingMotionAndBarometer: false)
         expect(tripColumns.filter { $0.hasPrefix("gps_") } == SessionRecorder.csvColumns.filter { $0.hasPrefix("gps_") },
                "Semua kolom GPS tetap tersedia saat gerakan/barometer mati")
@@ -288,9 +289,80 @@ struct SensorRecordingChecks {
         _ = recorder.start(format: .bleRaw, includesMotionAndBarometer: false)
         expect(events == [true, false, true], "Ganti format menghentikan sumber lama sebelum mulai baru")
         recorder.appendRaw(.info, "Uji data buatan")
+        for _ in 0..<100 { recorder.appendRaw(.info, "Frame uji tambahan") }
         recorder.stop()
+        let rawData = try! Data(contentsOf: recorder.fileURL!)
+        expect(recorder.lineCount == 101 && recorder.bytesWritten == rawData.count,
+               "Pembatas progres UI tidak membuang frame atau mengurangi hitungan akhir")
+        let rawSession = recorder.library.sessions.first { $0.fileName == recorder.fileURL!.lastPathComponent }!
+        expect(rawSession.lineCount == 101 && rawSession.bytes == rawData.count,
+               "Indeks memakai hitungan file sebenarnya meski pembaruan UI dibatasi")
         recorder.stop()
         expect(events == [true, false, true, false], "Stop idempotent")
         recorder.onRecordingChanged = nil
+    }
+
+    static func checkWorkScheduling() {
+        var csv = MonotonicThrottle(interval: 1)
+        var ui = LiveTelemetryBuffer()
+        var csvRows = 0
+        var uiUpdates = 0
+        for tick in 0..<200 {
+            let uptime = Double(tick) / 20
+            var packet = TelemetrySnapshot()
+            packet.merge([DecodedValue(key: "rpm", name: "RPM", raw: Double(tick), value: Double(tick), unit: "rpm")])
+            if ui.receive(packet, at: uptime, isForeground: true) != nil { uiUpdates += 1 }
+            // BLE, GPS, dan timer tiba pada saat sama; hanya satu boleh menulis.
+            for _ in 0..<3 { if csv.consume(at: uptime) { csvRows += 1 } }
+        }
+        expect(uiUpdates == 40, "200 paket BLE dalam 10 detik hanya menerbitkan 40 pembaruan dashboard")
+        expect(csvRows == 10, "600 pemicu sampling menghasilkan 10 baris, tanpa duplikat")
+        near(ui.latest.rpm, 199, "CSV tetap mendapatkan paket terakhir yang belum diterbitkan ke UI")
+        var backgroundPacket = TelemetrySnapshot()
+        backgroundPacket.merge([DecodedValue(key: "rpm", name: "RPM", raw: 9000, value: 9000, unit: "rpm")])
+        expect(ui.receive(backgroundPacket, at: 20, isForeground: false) == nil,
+               "Background tidak menerbitkan snapshot ke dashboard")
+        near(ui.latest.rpm, 9000, "Data rekaman tetap segar ketika dashboard berhenti diperbarui")
+        expect(ui.receive(backgroundPacket, at: 30, isForeground: true)?.rpm == 9000,
+               "Foreground kembali menampilkan data terbaru")
+        expect(csv.consume(at: 300) && !csv.consume(at: 300), "Suspend panjang tidak dikejar sebagai backlog CSV")
+        var jitter = MonotonicThrottle(interval: 1)
+        expect(jitter.consume(at: 0.002), "Callback BLE pertama mengambil slot sampling")
+        expect(!jitter.consume(at: 1), "Timer yang sedikit terlalu awal tidak menggandakan sampling")
+        near(jitter.remaining(at: 1), 0.002, "Timer dijadwalkan 2 ms lagi, bukan melewatkan satu detik")
+        expect(jitter.consume(at: 1.002), "Sampling lanjut pada tenggat setelah jitter timer")
+
+        var watchdog = InactivityDeadline()
+        watchdog.recordActivity(at: 0, timeout: 5)
+        watchdog.recordActivity(at: 4.9, timeout: 5)
+        near(watchdog.remaining(at: 5), 4.9, "Timer lama menghormati RX baru tanpa timer baru per paket")
+        near(watchdog.remaining(at: 9.9), 0, "Watchdog tetap mendeteksi stream yang benar-benar diam")
+        watchdog = InactivityDeadline()
+        expect(watchdog.remaining(at: 500) == nil, "Background/disconnect menghapus tenggat lama")
+        watchdog.recordActivity(at: 500, timeout: 5)
+        near(watchdog.remaining(at: 500), 5, "Foreground memberi tenggat baru")
+
+        var keepAlive = KeepAliveSchedule()
+        var clockTimes: [Double] = []
+        var notificationTimes: [Double] = []
+        for tick in 0..<2000 {
+            let uptime = Double(tick) / 100
+            // Dua pemicu bersamaan (timer dan RX) harus berbagi jadwal tunggal.
+            for _ in 0..<2 {
+                switch keepAlive.next(at: uptime, policy: .full) {
+                case .clock: clockTimes.append(uptime)
+                case .notification: notificationTimes.append(uptime)
+                case nil: break
+                }
+            }
+        }
+        expect(clockTimes.count == 20 && notificationTimes.count == 20,
+               "4000 callback hanya menghasilkan 20 pasangan 058A/058B selama 20 detik")
+        expect(zip(clockTimes, notificationTimes).allSatisfy { $1 - $0 >= 0.099999 },
+               "Pasangan 058A/058B tetap terpisah minimal 100 ms")
+        expect(zip(clockTimes, clockTimes.dropFirst()).allSatisfy { $1 - $0 >= 0.999999 },
+               "Tidak ada double-send 058A dalam satu detik")
+        expect(zip(notificationTimes, notificationTimes.dropFirst()).allSatisfy { $1 - $0 >= 0.999999 },
+               "Tidak ada double-send 058B dalam satu detik")
     }
 }

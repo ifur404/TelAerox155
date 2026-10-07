@@ -86,6 +86,10 @@ final class SessionRecorder: ObservableObject {
     private(set) var phonePlacement: PhonePlacement = .unknown
 
     private var fileHandle: FileHandle?
+    // Hitungan file selalu tepat; angka UI boleh diperbarui maksimal 1 Hz.
+    private var totalBytesWritten = 0
+    private var totalLineCount = 0
+    private var progressThrottle = MonotonicThrottle(interval: 1)
     /// Kapan metadata sesi aktif terakhir disimpan ke indeks — di-throttle
     /// (bukan tiap baris) supaya tidak nulis JSON ~20x/detik saat BLE Raw.
     private var lastIndexSync = Date.distantPast
@@ -161,7 +165,7 @@ final class SessionRecorder: ObservableObject {
         lastIndexSync = Date()
         library.upsert(RecordingSession(fileName: url.lastPathComponent, format: format,
                                         startedAt: started, endedAt: endedAt,
-                                        bytes: bytesWritten, lineCount: lineCount,
+                                        bytes: totalBytesWritten, lineCount: totalLineCount,
                                         stopReason: endedAt == nil ? nil : stopReason, title: nil))
     }
 
@@ -186,6 +190,9 @@ final class SessionRecorder: ObservableObject {
         self.format = format
         self.fileHandle = handle
         self.fileURL = url
+        self.totalBytesWritten = 0
+        self.totalLineCount = 0
+        self.progressThrottle = MonotonicThrottle(interval: 1)
         self.bytesWritten = 0
         self.lineCount = 0
         self.startedAt = Date()
@@ -209,6 +216,7 @@ final class SessionRecorder: ObservableObject {
         try? fileHandle?.synchronize()
         try? fileHandle?.close()
         fileHandle = nil
+        publishProgress()
         isRecording = false
         stopReason = reason
         syncIndex(endedAt: Date())
@@ -220,6 +228,7 @@ final class SessionRecorder: ObservableObject {
         guard isRecording else { return }
         do {
             try fileHandle?.synchronize()
+            publishProgress()
             syncIndex()
         } catch {
             stop(reason: "Berhenti — gagal menyimpan rekaman: \(error.localizedDescription)")
@@ -238,19 +247,27 @@ final class SessionRecorder: ObservableObject {
             stop(reason: "Berhenti — gagal menulis file: \(error.localizedDescription)")
             return
         }
-        bytesWritten += data.count
-        if countsAsLine { lineCount += 1 }
+        totalBytesWritten += data.count
+        if countsAsLine { totalLineCount += 1 }
+        if !countsAsLine || progressThrottle.consume(at: ProcessInfo.processInfo.systemUptime) {
+            publishProgress()
+        }
         if Date().timeIntervalSince(lastIndexSync) >= 10 { syncIndex() }
         enforceLimitsIfNeeded()
     }
 
     private func enforceLimitsIfNeeded() {
         guard isRecording else { return }
-        if bytesWritten >= maxBytes {
+        if totalBytesWritten >= maxBytes {
             stop(reason: "Berhenti otomatis — rekaman mencapai batas ukuran \(maxBytes / 1_048_576) MB.")
             return
         }
         enforceDurationLimitIfNeeded()
+    }
+
+    private func publishProgress() {
+        if bytesWritten != totalBytesWritten { bytesWritten = totalBytesWritten }
+        if lineCount != totalLineCount { lineCount = totalLineCount }
     }
 
     /// Cek limit durasi TANPA butuh row baru ditulis — dipanggil juga dari luar

@@ -51,6 +51,29 @@ Watchdog streaming tidak memutus koneksi berdasarkan timer selama background; pu
 ditangani CoreBluetooth. Ketika aplikasi kembali ke foreground, watchdog mendapat tenggat baru.
 Buffer file dan indeks di-flush saat aplikasi masuk background tanpa menghentikan sesi.
 
+## Beban kerja saat merekam
+
+- Timer sampling hanya hidup selama rekaman aktif. Timer, GPS, dan BLE berbagi gerbang monotonic
+  sehingga callback yang bersamaan tidak menulis baris CSV ganda. Timer mengikuti tenggat berikutnya
+  agar jitter tidak menyebabkan satu interval sampling terlewat.
+- Dashboard menerima maksimal 4 pembaruan per detik ketika foreground. Paket terbaru tetap
+  disimpan terpisah untuk CSV; pembatas UI tidak mengurangi data yang tersedia untuk rekaman.
+  Pembaruan snapshot dashboard berhenti ketika background, dan clock usia sensor hanya aktif
+  ketika dashboard live terlihat.
+- Format hex dan redaksi frame hanya dikerjakan saat rekaman BLE mentah aktif. Seluruh frame RAW
+  tetap ditulis, tetapi angka progres UI diperbarui maksimal sekali per detik (serta saat checkpoint
+  dan stop). Batas ukuran dan indeks tetap memakai hitungan file sebenarnya.
+- Watchdog streaming memperbarui tenggat aktivitas tanpa membuat timer baru untuk setiap paket.
+  Keep-alive tetap memakai jadwal tunggal; kebijakan penuh memang mengirim dua frame berbeda,
+  058A dan 058B, bukan pengiriman ganda frame yang sama.
+- GPS tetap mengikuti rekaman perjalanan. Sensor gerakan/barometer hanya aktif ketika dipilih;
+  frekuensi sensor dan akurasi GPS tidak diturunkan oleh optimasi ini.
+
+Pemeriksaan otomatis memakai callback dan data buatan untuk memverifikasi batas pembaruan,
+deduplikasi, serta keutuhan file. Penghematan CPU/baterai belum diukur pada iPhone fisik.
+
+## Validasi perangkat
+
 Validasi perangkat fisik tetap diperlukan: rekam minimal 5 menit dengan layar terkunci untuk CSV
 dengan/tanpa gerakan dan barometer serta BLE mentah, lalu periksa timestamp serta jeda data. Ulangi dengan
 izin lokasi ditolak dan motor terputus/tersambung ulang. Simulator tidak menguji koneksi CCU atau

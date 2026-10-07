@@ -5,6 +5,7 @@ check_dir=$(mktemp -d /tmp/telaerox-sensor-checks.XXXXXX)
 trap 'rm -rf "$check_dir"' EXIT
 xcrun swiftc -parse-as-library -default-isolation MainActor -module-cache-path "$check_dir/modules" \
   TelAerox155/CSVCodec.swift TelAerox155/PhoneSensorSample.swift TelAerox155/HomeTelemetry.swift \
+  TelAerox155/LiveTelemetryBuffer.swift TelAerox155/YConnectKit/MonotonicTiming.swift \
   TelAerox155/TripAnalysis.swift TelAerox155/TripPhoneAnalysis.swift \
   TelAerox155/SessionRecorder.swift TelAerox155/RecordingLibrary.swift \
   TelAerox155/YConnectKit/BinaryReader.swift TelAerox155/YConnectKit/Checksum.swift \

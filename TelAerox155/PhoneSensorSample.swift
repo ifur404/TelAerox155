@@ -54,10 +54,12 @@ nonisolated struct MotionAccumulator {
         last = r
         count += 1
         sumX += r.ax; sumY += r.ay; sumZ += r.az
-        sumSquares += r.magnitude * r.magnitude
-        verticalSquares += r.vertical * r.vertical
-        peak = max(peak, r.magnitude)
-        verticalPeak = max(verticalPeak, abs(r.vertical))
+        let magnitude = r.magnitude
+        let vertical = r.vertical
+        sumSquares += magnitude * magnitude
+        verticalSquares += vertical * vertical
+        peak = max(peak, magnitude)
+        verticalPeak = max(verticalPeak, abs(vertical))
     }
 
     mutating func take(at uptime: Double) -> MotionSummary? {

@@ -78,10 +78,8 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
 
     private var recordingTimer: Timer?
 
-    /// Kapan baris CSV terakhir ditulis — dipakai `sampleCSVIfDue()` supaya
-    /// output tetap ~1 baris/detik walau dipicu dari dua sumber (timer 1 Hz
-    /// DAN notifikasi BLE, lihat komentar di `sampleCSVIfDue()`).
-    private var lastCSVSampleAt: Date?
+    private var csvThrottle = MonotonicThrottle(interval: 1)
+    private var liveTelemetry = LiveTelemetryBuffer()
 
     override init() {
         super.init()
@@ -180,12 +178,12 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         client?.stop()
         client = nil
         snapshot = TelemetrySnapshot()
+        liveTelemetry = LiveTelemetryBuffer()
         vin = nil
         modelCode = nil
         errorMessage = nil
         discovered.removeAll()
         authTrace.removeAll()
-        startRecordingTimer()
         let c = YConnectClient(credentials: credentials, targetPeripheralID: peripheralID,
                                restoresState: !pairing)
         c.keepAlivePolicy = keepAlivePolicy
@@ -205,12 +203,22 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
             self?.recorder.appendRaw(.info, stage)
             Task { @MainActor in self?.addAuthTrace(stage) }
         }
-        c.onRawFrame = { [weak self] direction, message in
-            self?.recorder.appendRaw(direction, message)
-        }
         c.delegate = self
         client = c
+        updateRawFrameLogging()
         c.start()
+    }
+
+    /// Callback nil membuat interpolasi hex/redaksi dilewati di YConnectClient.
+    /// Pasang hanya selama rekaman BLE mentah, termasuk saat reconnect.
+    private func updateRawFrameLogging() {
+        guard recorder.isRecording && recorder.format == .bleRaw else {
+            client?.onRawFrame = nil
+            return
+        }
+        client?.onRawFrame = { [weak self] direction, message in
+            self?.recorder.appendRaw(direction, message)
+        }
     }
 
     @MainActor
@@ -251,6 +259,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         client = nil
         state = .poweredOff
         snapshot = TelemetrySnapshot()
+        liveTelemetry = LiveTelemetryBuffer()
         vin = nil
         modelCode = nil
         setIdleTimerDisabled(false)
@@ -277,20 +286,29 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     // MARK: - Sampling rekaman
 
     private func startRecordingTimer() {
-        stopRecordingTimer()
-        // Timer 1 Hz ini masih jadi sumber sampling CSV utama saat foreground/
-        // BLE lagi diam, tapi BUKAN satu-satunya lagi — lihat sampleCSVIfDue().
-        let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            Task { @MainActor in
+        guard recordingTimer == nil else { return }
+        // Satu timer mengikuti tenggat sampling terakhir. Kalau callback BLE
+        // mendahuluinya, jadwalkan sisa interval; jangan melewatkan satu detik
+        // penuh hanya karena timer periodik bangun sedikit terlalu awal.
+        let delay = recorder.format == .csv
+            ? (csvThrottle.remaining(at: ProcessInfo.processInfo.systemUptime) ?? 1) : 1
+        let t = Timer(timeInterval: max(0.001, delay), repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.recordingTimer = nil
                 // Dicek tiap detik TERLEPAS dari state BLE/apakah ada baris
                 // baru ditulis — supaya rekaman yang idle lama (disconnect
                 // manual atau auto-reconnect berkepanjangan) tetap kena batas
                 // durasi otomatis (lihat dokblok disconnect()).
-                self.recorder.enforceDurationLimitIfNeeded()
-                self.sampleCSVIfDue()
+                if self.recorder.format == .csv {
+                    self.sampleCSVIfDue()
+                } else {
+                    self.recorder.enforceDurationLimitIfNeeded()
+                }
+                if self.recorder.isRecording { self.startRecordingTimer() }
             }
         }
+        t.tolerance = 0.1
         RunLoop.main.add(t, forMode: .common)
         recordingTimer = t
     }
@@ -300,8 +318,8 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         recordingTimer = nil
     }
 
-    /// Tulis satu baris CSV kalau sedang merekam CSV DAN sudah ≥ ~1 detik
-    /// sejak baris terakhir. Dipanggil dari DUA sumber:
+    /// Tulis maksimal satu baris CSV per detik dari timer, BLE, atau GPS.
+    /// Semua sumber memakai gerbang monotonic yang sama:
     /// - timer 1 Hz (`startRecordingTimer`), cukup saat app di foreground atau
     ///   background dengan GPS aktif;
     /// - `client(_:didUpdate:)`, karena notifikasi BLE (~20 Hz) tetap
@@ -311,12 +329,12 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     ///   dikunci. Throttle di sini yang menjaga hasilnya tetap 1 baris/detik
     ///   walau dipicu dari dua tempat.
     private func sampleCSVIfDue() {
-        recorder.enforceDurationLimitIfNeeded()
         guard recorder.isRecording, recorder.format == .csv else { return }
+        guard csvThrottle.consume(at: ProcessInfo.processInfo.systemUptime) else { return }
+        recorder.enforceDurationLimitIfNeeded()
+        guard recorder.isRecording else { return }
         let now = Date()
-        if let last = lastCSVSampleAt, now.timeIntervalSince(last) < 0.95 { return }
-        lastCSVSampleAt = now
-        recorder.appendCSVRow(snapshot: snapshot, vin: vin, modelCode: modelCode,
+        recorder.appendCSVRow(snapshot: liveTelemetry.latest, vin: vin, modelCode: modelCode,
                               location: location.lastLocation, bleState: recordingState,
                               phone: phoneSensors.sample(placement: recorder.phonePlacement),
                               gpsAuthorization: location.authorizationName,
@@ -343,7 +361,8 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     private func bindRecorderToLocation() {
         recorder.onRecordingChanged = { [weak self] isRecording in
             guard let self else { return }
-            self.lastCSVSampleAt = nil
+            self.csvThrottle = MonotonicThrottle(interval: 1)
+            self.updateRawFrameLogging()
             if isRecording {
                 self.startRecordingTimer()
                 if self.recorder.format == .csv {
@@ -356,9 +375,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
             } else {
                 self.location.stop()
                 self.phoneSensors.stop()
-                if !self.isActive && !self.isConnecting {
-                    self.stopRecordingTimer()
-                }
+                self.stopRecordingTimer()
             }
         }
 
@@ -402,6 +419,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)
             .sink { [weak self] _ in
                 self?.appState = "foreground"
+                if let self { self.snapshot = self.liveTelemetry.latest }
                 self?.client?.setBackgrounded(false)
                 self?.recorder.enforceDurationLimitIfNeeded()
                 self?.recorder.appendRaw(.info, "=== app → foreground ===")
@@ -455,6 +473,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         // Jangan membawa snapshot dari koneksi sebelumnya ke sesi auth baru.
         if self.state == .streaming && state != .streaming {
             snapshot = TelemetrySnapshot()
+            liveTelemetry = LiveTelemetryBuffer()
         }
         self.state = state
         setIdleTimerDisabled(state == .streaming)
@@ -462,7 +481,10 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
 
     func client(_ client: YConnectClient, didUpdate snapshot: TelemetrySnapshot) {
         guard self.client === client else { return }
-        self.snapshot = snapshot
+        if let display = liveTelemetry.receive(snapshot, at: ProcessInfo.processInfo.systemUptime,
+                                               isForeground: appState == "foreground") {
+            self.snapshot = display
+        }
         // Lihat dokblok sampleCSVIfDue(): notifikasi BLE ini yang menjaga
         // rekaman CSV tetap jalan di background walau timer 1 Hz telat/mati.
         sampleCSVIfDue()

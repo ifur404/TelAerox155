@@ -1,5 +1,4 @@
 import SwiftUI
-import Combine
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -13,8 +12,7 @@ struct ContentView: View {
     @State private var showRecordSheet = false
     @State private var showAuthCopiedToast = false
     @State private var displayTime = Date()
-    // Tick tampilan saja: tidak mengirim frame atau mengubah ritme BLE.
-    private let displayClock = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    @Environment(\.scenePhase) private var scenePhase
     // Kartu sensor yang di-tap → tampilkan penjelasan (SensorCatalog). key
     // di sini merujuk ke MetricValue.key / MappingItem.key yang sama dipakai
     // buat decode, bukan string bebas.
@@ -46,7 +44,15 @@ struct ContentView: View {
             RecordingDock(recorder: store.recorder) { showRecordSheet = true }
         }
         .preferredColorScheme(.dark)
-        .onReceive(displayClock) { displayTime = $0 }
+        .task(id: store.isActive && scenePhase == .active && !showRecordSheet && selectedSensorKey == nil) {
+            // Clock usia sensor hanya dibutuhkan selama dashboard live terlihat.
+            guard store.isActive, scenePhase == .active, !showRecordSheet, selectedSensorKey == nil else { return }
+            while !Task.isCancelled {
+                displayTime = Date()
+                do { try await Task.sleep(for: .seconds(1)) }
+                catch { return }
+            }
+        }
         .alert("Kesalahan", isPresented: errorBinding) {
             Button("OK", role: .cancel) {}
         } message: {

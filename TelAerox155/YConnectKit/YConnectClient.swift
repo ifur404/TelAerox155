@@ -125,6 +125,7 @@ public final class YConnectClient: NSObject {
     /// yang akhirnya melaporkan disconnect.
     public var streamWatchdogSeconds: TimeInterval = 5
     private var streamWatchdog: Timer?
+    private var streamActivity = InactivityDeadline()
 
     private let targetPeripheralID: UUID?
     private let credentials: Credentials
@@ -335,10 +336,17 @@ public final class YConnectClient: NSObject {
     private func armStreamWatchdog() {
         disarmStreamWatchdog()
         guard !isInBackground else { return }
-        let t = Timer(timeInterval: streamWatchdogSeconds, repeats: false) { [weak self] _ in
-            guard let self else { return }
-            self.disarmStreamWatchdog()
-            if self.state == .streaming {
+        streamActivity.recordActivity(at: ProcessInfo.processInfo.systemUptime, timeout: streamWatchdogSeconds)
+        scheduleStreamWatchdog(after: streamWatchdogSeconds)
+    }
+
+    private func scheduleStreamWatchdog(after delay: TimeInterval) {
+        let t = Timer(timeInterval: max(0.001, delay), repeats: false) { [weak self] _ in
+            guard let self, !self.isInBackground, self.state == .streaming else { return }
+            self.streamWatchdog = nil
+            if let remaining = self.streamActivity.remaining(at: ProcessInfo.processInfo.systemUptime), remaining > 0 {
+                self.scheduleStreamWatchdog(after: remaining)
+            } else {
                 let label = "stream berhenti — nggak ada frame valid \(Int(self.streamWatchdogSeconds)) dt"
                 self.onAuthStage?(label)
                 self.state = .failed(label)
@@ -352,6 +360,7 @@ public final class YConnectClient: NSObject {
     private func disarmStreamWatchdog() {
         streamWatchdog?.invalidate()
         streamWatchdog = nil
+        streamActivity = InactivityDeadline()
     }
 
     struct AuthTimeout: LocalizedError {
@@ -419,7 +428,9 @@ public final class YConnectClient: NSObject {
         onRawFrame?(.rx, "type=\(String(format: "0x%02X", raw.first ?? 0)) len=\(raw.count)B hex=\(Self.redactedRXHex(raw))")
 
         if state == .streaming {
-            armStreamWatchdog()   // frame valid apa pun = tanda hidup
+            if !isInBackground {
+                streamActivity.recordActivity(at: ProcessInfo.processInfo.systemUptime, timeout: streamWatchdogSeconds)
+            }
             sendPeriodicTick()
         }
 

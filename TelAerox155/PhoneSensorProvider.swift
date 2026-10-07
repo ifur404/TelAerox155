@@ -79,6 +79,7 @@ final class PhoneSensorProvider {
     }
 
     func stop() {
+        guard active else { return }
         active = false
         generation = UUID()
         #if os(iOS)
