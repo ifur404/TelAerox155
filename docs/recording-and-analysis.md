@@ -32,6 +32,27 @@ dari Core Location.
 Sensor iPhone tetap direkam ketika BLE terputus, sementara kolom motor menjadi kosong. CSV lama
 tetap dapat dibuka. Data yang tidak ada pada rekaman lama tidak ditampilkan sebagai pembacaan baru.
 
+## Rekaman saat layar terkunci
+
+Mulai rekaman ketika aplikasi masih terbuka. Untuk CSV dengan sensor iPhone, GPS dimulai secara
+sinkron setelah file dan header siap; tidak menunggu tick timer atau antrean UI berikutnya.
+Jika sensor iPhone dimatikan, GPS tidak dinyalakan dan kolom sensor iPhone tidak disimpan.
+
+Keep-alive memakai satu jadwal monotonic yang dilayani oleh timer, callback BLE masuk, dan callback
+kesiapan buffer tulis. Kebijakan yang dipilih tetap berlaku: `off` tidak menulis, `notifyOnly` hanya
+058B, dan `full` mengirim 058A lalu 058B dengan jeda minimal 100 ms. Callback yang berdekatan tidak
+menggandakan frame. Setelah suspend, jadwal melanjutkan frame berikutnya tanpa mengejar backlog.
+Tidak ada jenis perintah kendaraan baru.
+
+Watchdog streaming tidak memutus koneksi berdasarkan timer selama background; putus/sambung tetap
+ditangani CoreBluetooth. Ketika aplikasi kembali ke foreground, watchdog mendapat tenggat baru.
+Buffer file dan indeks di-flush saat aplikasi masuk background tanpa menghentikan sesi.
+
+Validasi perangkat fisik tetap diperlukan: rekam minimal 5 menit dengan layar terkunci untuk CSV
+dengan/tanpa sensor iPhone dan BLE mentah, lalu periksa timestamp serta jeda data. Ulangi dengan
+izin lokasi ditolak dan motor terputus/tersambung ulang. Simulator tidak menguji koneksi CCU atau
+kebijakan suspend iPhone. Force-quit atau terminasi proses tidak didukung sebagai rekaman kontinu.
+
 ## Halaman detail dan kejadian
 
 Halaman detail menampilkan kualitas data motor/GPS/gerakan, bagian data yang hilang, grafik sensor,

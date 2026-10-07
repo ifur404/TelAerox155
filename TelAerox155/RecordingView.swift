@@ -121,13 +121,15 @@ struct RecordingView: View {
 
     private var startCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Mau rekam apa?")
+            Text("Rekaman baru")
                 .font(.headline)
                 .foregroundStyle(.white)
 
-            ForEach(SessionRecorder.Format.allCases) { f in
-                formatOption(f)
+            Picker("Jenis rekaman", selection: $formatRaw) {
+                Text("Perjalanan").tag(SessionRecorder.Format.csv.rawValue)
+                Text("BLE mentah").tag(SessionRecorder.Format.bleRaw.rawValue)
             }
+            .pickerStyle(.segmented)
 
             connectionHint
 
@@ -142,9 +144,6 @@ struct RecordingView: View {
                     }
                 }
                 .tint(accent)
-                Text("Gerakan dan elevasi ikut direkam jika tersedia dan diizinkan. Analisis guncangan motor memakai posisi holder; orientasi yang dicatat adalah orientasi HP.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             }
 
             Button {
@@ -159,7 +158,12 @@ struct RecordingView: View {
             }
             .buttonStyle(.plain)
 
-            Text("Rekaman tetap berjalan saat layar dikunci selama iOS memberi waktu berjalan lewat GPS/BLE. Jeda sensor ditandai di detail. Berhenti otomatis setelah 6 jam atau 20 MB; tersimpan di Riwayat.")
+            Text(selectedFormat == .csv && includePhone
+                 ? "Mulai sebelum mengunci layar. GPS dan motor direkam sesuai izin dan koneksi."
+                 : "Saat layar terkunci, rekaman mengikuti data Bluetooth dari motor.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("Tersimpan otomatis · Maks. 6 jam / 20 MB")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -167,63 +171,15 @@ struct RecordingView: View {
         .background(RecordingPalette.card, in: RoundedRectangle(cornerRadius: 20))
     }
 
-    private func formatOption(_ f: SessionRecorder.Format) -> some View {
-        let selected = f == selectedFormat
-        return Button {
-            formatRaw = f.rawValue
-        } label: {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: f.icon)
-                    .font(.title3)
-                    .foregroundStyle(selected ? accent : .secondary)
-                    .frame(width: 28)
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Text(f.title)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.white)
-                        if f == .csv {
-                            Text("Disarankan")
-                                .font(.caption2.weight(.bold))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .foregroundStyle(accent)
-                                .background(accent.opacity(0.15), in: Capsule())
-                        }
-                    }
-                    Text(f.subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 0)
-                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                    .font(.title3)
-                    .foregroundStyle(selected ? accent : .white.opacity(0.25))
-            }
-            .padding(12)
-            .background(
-                RoundedRectangle(cornerRadius: 14)
-                    .fill(selected ? accent.opacity(0.12) : Color.white.opacity(0.04))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14)
-                    .stroke(selected ? accent : Color.white.opacity(0.08), lineWidth: selected ? 1.5 : 1)
-            )
-        }
-        .buttonStyle(.plain)
-    }
-
     private var connectionHint: some View {
         HStack(spacing: 8) {
             Image(systemName: store.isActive ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                 .foregroundStyle(store.isActive ? .green : .orange)
             Text(store.isActive
-                 ? "Motor terhubung — data langsung masuk begitu mulai."
+                 ? "Motor terhubung"
                  : (selectedFormat == .csv && includePhone
-                    ? "Motor belum terhubung. Sensor iPhone tetap bisa direkam; data motor ikut masuk setelah tersambung."
-                    : "Motor belum terhubung. Rekaman tetap bisa dimulai; frame masuk setelah tersambung."))
+                    ? "Motor belum terhubung · sensor iPhone tetap bisa direkam"
+                    : "Hubungkan motor untuk menerima data"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -618,22 +574,32 @@ struct RecordingDetailView: View {
                 .listRowBackground(RecordingPalette.card)
             }
 
-            Section {
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                    tile("Durasi", s.duration.map { RecordingFormat.duration($0) } ?? "Berjalan…", icon: "timer")
-                    tile("Ukuran", RecordingFormat.size(isActive ? recorder.bytesWritten : s.bytes), icon: "internaldrive")
-                    tile(s.format == .csv ? "Baris data" : "Frame",
-                         lineCountText(s), icon: "list.number")
-                    tile("Format file", s.format.fileExtension.uppercased(), icon: "doc")
-                }
-                .padding(.vertical, 4)
-            } header: {
-                if analysis != nil { Text("File") }
+            TripDetailSection(title: "Kendaraan & file", icon: "doc.text") {
+                    if let a = analysis, !isActive {
+                        TripVehicleInfo(analysis: a)
+                        TripDataNotes(analysis: a)
+                    }
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                        tile("Durasi", s.duration.map { RecordingFormat.duration($0) } ?? "Berjalan…", icon: "timer")
+                        tile("Ukuran", RecordingFormat.size(isActive ? recorder.bytesWritten : s.bytes), icon: "internaldrive")
+                        tile(s.format == .csv ? "Baris data" : "Frame", lineCountText(s), icon: "list.number")
+                        tile("Format file", s.format.fileExtension.uppercased(), icon: "doc")
+                    }
+                    .padding(.vertical, 4)
+                    Text("Nama file: \(s.fileName)")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
             }
-            .listRowBackground(Color.clear)
-            .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
 
             Section {
+                if let a = analysis, !a.samples.isEmpty, !isActive {
+                    Button {
+                        playback?.pause()
+                        showShareCard = true
+                    } label: {
+                        Label("Buat Kartu Sosmed", systemImage: "photo.on.rectangle.angled")
+                    }
+                }
                 Button {
                     shareURL = library.url(for: s)
                 } label: {
@@ -647,23 +613,36 @@ struct RecordingDetailView: View {
                     Label("Hapus Rekaman", systemImage: "trash")
                 }
                 .disabled(isActive)
+            } header: {
+                Text("Aksi")
             } footer: {
                 Text(isActive
                      ? "Stop rekaman dulu untuk membagikan atau menghapus."
-                     : "Nama file: \(s.fileName)")
+                     : "File asli dapat berisi lokasi dan identitas kendaraan. Periksa sebelum dibagikan. Kartu sosmed menyembunyikan ujung rute secara default.")
                     .font(.caption2.monospaced())
             }
             .listRowBackground(RecordingPalette.card)
         }
         .listStyle(.insetGrouped)
+        .listSectionSpacing(8)
         .scrollContentBackground(.hidden)
     }
 
-    /// Semua bagian hasil analisis CSV: peta, statistik, chart, CVT, gaya
-    /// berkendara, distribusi, info kendaraan, catatan data.
+    /// Semua bagian langsung terlihat, tanpa dropdown.
+    /// Semua grafik tetap memakai kursor replay yang sama.
     @ViewBuilder
     private var analysisSections: some View {
         if let a = analysis, let playback, !a.samples.isEmpty {
+            Section {
+                VStack(alignment: .leading, spacing: 12) {
+                    TripStatsGrid(analysis: a, duration: session?.duration)
+                    TripQualityWarning(analysis: a)
+                }
+                .padding(.vertical, 4)
+            }
+            .listRowSeparator(.hidden)
+            .listRowBackground(RecordingPalette.card)
+
             if a.hasRoute {
                 Section {
                     TripMapCard(analysis: a, playback: playback, accent: accent)
@@ -672,101 +651,77 @@ struct RecordingDetailView: View {
                 .listRowBackground(RecordingPalette.card)
             }
 
-            Section {
-                TripStatsGrid(analysis: a)
-                    .padding(.vertical, 4)
-                Button {
-                    playback.pause()
-                    showShareCard = true
-                } label: {
-                    Label("Buat Kartu Sosmed", systemImage: "photo.on.rectangle.angled")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .foregroundStyle(.black)
-                        .background(accent, in: RoundedRectangle(cornerRadius: 14))
+            if let start = a.route.first, let finish = a.route.last, let session {
+                TripDetailSection(title: "Mulai & selesai", icon: "mappin.and.ellipse") {
+                    TripEndpointsView(start: start, finish: finish, startedAt: session.startedAt)
                 }
-                .buttonStyle(.plain)
-                .padding(.bottom, 4)
-            }
-            .listRowBackground(Color.clear)
-            .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
-
-            Section("Kualitas rekaman") {
-                TripQualityCard(analysis: a, playback: playback)
-            }
-            .listRowBackground(RecordingPalette.card)
-
-            if a.hasPhoneColumns {
-                Section("iPhone & elevasi") {
-                    TripPhoneSummary(analysis: a)
-                }
-                .listRowBackground(RecordingPalette.card)
-
-                Section("Sensor pada waktu replay") {
-                    TripSensorReadout(playback: playback)
-                }
-                .listRowBackground(RecordingPalette.card)
             }
 
-            if a.elevationProfile.count > 1 {
-                Section {
-                    TripElevationProfile(analysis: a, playback: playback)
-                }
-                .listRowBackground(RecordingPalette.card)
+            TripDetailSection(title: "Ringkasan perjalanan", icon: "clock") {
+                TripStatsGrid(analysis: a, group: .journey)
+                TripJourneySummary(analysis: a)
             }
 
-            if a.hasPhoneColumns || !a.accelerationSeries.isEmpty {
-                Section("Kejadian perjalanan") {
+            if a.hasECU || a.hasDiagnosticData || !a.batterySeries.isEmpty || !a.coolantSeries.isEmpty {
+                TripDetailSection(title: "Kondisi motor", icon: "gauge.with.dots.needle.50percent") {
+                    TripStatsGrid(analysis: a, group: .vehicle)
+                    TripDiagnosticStatus(analysis: a)
+                    TripTimelineCharts(analysis: a, playback: playback, group: .vehicle)
+                }
+            }
+
+            if !a.speedSeries.isEmpty || !a.gpsSpeedSeries.isEmpty || !a.rpmSeries.isEmpty
+                || !a.throttleSeries.isEmpty || !a.modeSeconds.isEmpty || a.cvtPoints.count >= 10
+                || !a.speedHistogram.isEmpty || !a.rpmHistogram.isEmpty {
+                TripDetailSection(title: "Analisis berkendara", icon: "chart.xyaxis.line") {
+                    TripStatsGrid(analysis: a, group: .riding)
+                    TripTimelineCharts(analysis: a, playback: playback)
+                    if !a.modeSeconds.isEmpty { TripModeBreakdown(analysis: a) }
+                    if !a.speedHistogram.isEmpty || !a.rpmHistogram.isEmpty {
+                        TripHistogramCard(analysis: a)
+                    }
+                    if a.cvtPoints.count >= 10 { TripCVTChart(analysis: a, playback: playback) }
+                }
+            }
+
+            if !a.accelerationSeries.isEmpty || !a.motionPeakSeries.isEmpty || !a.events.isEmpty {
+                TripDetailSection(title: "Kejadian perjalanan", icon: "waveform.path") {
                     TripEventsCard(analysis: a, playback: playback)
                 }
-                .listRowBackground(RecordingPalette.card)
             }
 
-            Section {
-                TripTimelineCharts(analysis: a, playback: playback)
-                TripPhoneCharts(analysis: a, playback: playback)
-            } header: {
-                Text("Grafik")
-            } footer: {
-                Text("Geser mendatar atau tap di grafik untuk menggeser kursor — peta dan grafik lain ikut. Tekan ▶︎ untuk replay.")
-            }
-            .listRowBackground(RecordingPalette.card)
-
-            if a.cvtPoints.count >= 10 {
-                Section {
-                    TripCVTChart(analysis: a, playback: playback)
+            if !a.altitudeSeries.isEmpty || a.elevationProfile.count > 1 || a.altitudeGain != nil {
+                TripDetailSection(title: "Elevasi", icon: "mountain.2") {
+                    Text("Estimasi dari sensor; bergantung akurasi GPS dan tekanan udara.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    TripStatsGrid(analysis: a, group: .elevation)
+                    TripElevationSummary(analysis: a)
+                    if a.elevationProfile.count > 1 {
+                        TripElevationProfile(analysis: a, playback: playback)
+                    }
+                    TripTimelineCharts(analysis: a, playback: playback, group: .elevation)
                 }
-                .listRowBackground(RecordingPalette.card)
             }
 
-            if !a.modeSeconds.isEmpty {
-                Section {
-                    TripModeBreakdown(analysis: a)
+            if a.speedoErrorPercent != nil || a.fuelMl != nil {
+                TripDetailSection(title: "Estimasi & perbandingan", icon: "equal.circle") {
+                    TripStatsGrid(analysis: a, group: .estimates)
+                    Text("BBM eksperimental, belum dikalibrasi. Selisih speedometer memakai pasangan data ECU/GPS yang memenuhi syarat.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-                .listRowBackground(RecordingPalette.card)
             }
 
-            if !a.speedHistogram.isEmpty || !a.rpmHistogram.isEmpty {
-                Section {
-                    TripHistogramCard(analysis: a)
-                }
-                .listRowBackground(RecordingPalette.card)
+            TripDetailSection(title: "Kualitas rekaman", icon: "checkmark.shield") {
+                TripQualityCard(analysis: a, playback: playback)
             }
-
-            if a.vin != nil || a.hasECU {
-                Section("Kendaraan") {
-                    TripVehicleInfo(analysis: a)
+            if a.hasPhoneColumns {
+                TripDetailSection(title: "Sensor iPhone", icon: "iphone") {
+                    TripPhoneSummary(analysis: a)
+                    TripPhoneCharts(analysis: a, playback: playback)
                 }
-                .listRowBackground(RecordingPalette.card)
             }
-
-            if a.rowsBeforeECU + a.rowsAfterKeyOff + a.gpsRejected > 0 || a.fuelMl != nil
-                || a.speedoErrorPercent != nil {
-                Section("Catatan data") {
-                    TripDataNotes(analysis: a)
-                }
-                .listRowBackground(RecordingPalette.card)
+            TripDetailSection(title: "Sensor saat replay", icon: "slider.horizontal.3") {
+                TripSensorReadout(playback: playback)
             }
         } else if loadingSummary {
             Section {
@@ -818,8 +773,7 @@ struct RecordingDetailView: View {
                 .minimumScaleFactor(0.7)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(RecordingPalette.card, in: RoundedRectangle(cornerRadius: 14))
+        .padding(.vertical, 8)
     }
 
     private func lineCountText(_ s: RecordingSession) -> String {
@@ -858,39 +812,48 @@ struct RecordingDetailView: View {
     }
 }
 
-// MARK: - Tombol header
+// MARK: - Kontrol rekaman tetap di layar utama
 
-/// Tombol "Rekam" di header ContentView — ikon biasa saat idle, berubah jadi
-/// pil merah berisi timer saat merekam, supaya status rekaman selalu kelihatan
-/// dari layar utama tanpa harus membuka sheet.
-struct RecordHeaderButton: View {
+/// Mengamati recorder langsung agar status tidak menunggu pembaruan BLE.
+struct RecordingDock: View {
     @ObservedObject var recorder: SessionRecorder
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            if recorder.isRecording {
-                TimelineView(.periodic(from: recorder.startedAt ?? .now, by: 1)) { context in
-                    HStack(spacing: 5) {
-                        Circle().fill(.white).frame(width: 7, height: 7)
-                        Text(RecordingFormat.clock(context.date.timeIntervalSince(recorder.startedAt ?? context.date)))
-                            .font(.caption.weight(.bold).monospacedDigit())
+            HStack(spacing: 12) {
+                Image(systemName: recorder.isRecording ? "record.circle.fill" : "record.circle")
+                    .font(.title2)
+                    .foregroundStyle(RecordingPalette.red)
+                VStack(alignment: .leading, spacing: 3) {
+                    if recorder.isRecording, let startedAt = recorder.startedAt {
+                        HStack {
+                            Text("Merekam")
+                            Text(startedAt, style: .timer).monospacedDigit()
+                        }
+                        .font(.headline)
+                        Text("\(recorder.lineCount.formatted()) \(recorder.format == .csv ? "baris" : "frame") tersimpan · Kelola rekaman")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text("Rekam perjalanan").font(.headline)
+                        Text("Mulai rekaman atau buka riwayat")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 10)
-                    .frame(height: 34)
-                    .background(RecordingPalette.red, in: Capsule())
                 }
-            } else {
-                Image(systemName: "record.circle")
-                    .font(.system(size: 17, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.85))
-                    .frame(width: 34, height: 34)
-                    .background(Color.white.opacity(0.08), in: Circle())
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
             }
+            .foregroundStyle(.white)
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(recorder.isRecording ? RecordingPalette.red.opacity(0.12) : .white.opacity(0.06),
+                        in: RoundedRectangle(cornerRadius: 16))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(recorder.isRecording ? "Sedang merekam — buka halaman rekam" : "Rekam sesi")
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial)
     }
 }
 
@@ -916,8 +879,7 @@ struct GPSStatusRow: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
-            if location.authorizationStatus == .denied || location.authorizationStatus == .restricted
-                || location.authorizationStatus == .authorizedWhenInUse {
+            if location.authorizationStatus == .denied || location.authorizationStatus == .restricted {
                 Button("Pengaturan") {
                     #if canImport(UIKit)
                     if let url = URL(string: UIApplication.openSettingsURLString) {
@@ -953,10 +915,10 @@ struct GPSStatusRow: View {
         case .authorizedWhenInUse:
             // Dengan izin ini pun GPS tetap lanjut di background SELAMA
             // update-nya dimulai di foreground (persis yang dilakukan tombol
-            // "Mulai Rekam") — "Selalu" cuma lebih pasti.
+            // "Mulai Rekam").
             let base = requestingOnStart ? "GPS siap." :
                 (location.lastLocation != nil ? "GPS aktif." : "GPS menunggu sinyal…")
-            return base + " Pilih izin \"Selalu\" supaya lebih pasti saat layar dikunci."
+            return base
         case .authorizedAlways:
             if requestingOnStart { return "GPS siap." }
             return location.lastLocation != nil ? "GPS aktif." : "GPS menunggu sinyal…"

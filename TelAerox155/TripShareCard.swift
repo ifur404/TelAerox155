@@ -4,8 +4,8 @@ import UniformTypeIdentifiers
 import UIKit
 #endif
 
-// Kartu sosmed dari satu rekaman: gambar Story 9:16 (1080×1920) atau stiker
-// PNG transparan buat ditempel di atas foto sendiri (IG Story dsb).
+// Kartu sosmed: Story 9:16 (1080×1920), Feed 4:5 (1080×1350), atau
+// stiker PNG transparan buat ditempel di atas foto sendiri (IG Story dsb).
 //
 // Privasi: rute digambar sebagai SILUET tanpa peta di belakangnya, dan secara
 // default 200 m awal & akhir dipotong — titik start/finish sering = rumah
@@ -14,12 +14,13 @@ import UIKit
 // MARK: - Opsi
 
 enum ShareCardFormat: String, CaseIterable, Identifiable {
-    case story, sticker
+    case story, feed, sticker
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .story: return "Story 9:16"
+        case .feed: return "Feed 4:5"
         case .sticker: return "Stiker"
         }
     }
@@ -28,7 +29,7 @@ enum ShareCardFormat: String, CaseIterable, Identifiable {
     var size: CGSize {
         switch self {
         case .story: return CGSize(width: 360, height: 640)
-        case .sticker: return CGSize(width: 360, height: 450)
+        case .feed, .sticker: return CGSize(width: 360, height: 450)
         }
     }
 }
@@ -84,6 +85,14 @@ struct ShareCardContent {
     let avgSpeed: String?
     let maxCoolant: String?
     let topMode: String?
+    let movingTime: String?
+    let stoppedTime: String?
+    let movingFraction: Double?
+    let elevationGain: String?
+    let batteryMin: String?
+    let sourceText: String
+    let routeIsPrivate: Bool
+    let qualityNote: String?
 
     init(analysis a: TripAnalysis, session: RecordingSession, hideEnds: Bool) {
         dateText = session.startedAt.formatted(
@@ -96,10 +105,20 @@ struct ShareCardContent {
         }
         route = hideEnds ? TripAnalysis.trimmedForPrivacy(a.route, meters: 200) : a.route
         speedSeries = a.speedSeries.isEmpty ? a.gpsSpeedSeries : a.speedSeries
+        routeIsPrivate = hideEnds && a.hasRoute
+        sourceText = a.hasECU ? (a.hasRoute ? "ECU + GPS" : "TELEMETRI ECU") : (a.hasRoute ? "GPS iPHONE" : "DATA REKAMAN")
+        qualityNote = (a.hasECU && a.ecuCoverage < 90) || (a.hasRoute && a.gpsCoverage < 90) || a.recordingGapSeconds > 0
+            ? "Data tidak lengkap · statistik dari sampel tersedia" : nil
+        let movingTotal = a.movingSeconds + a.stoppedSeconds
+        movingTime = movingTotal > 0 ? RecordingFormat.clock(a.movingSeconds) : nil
+        stoppedTime = movingTotal > 0 ? RecordingFormat.clock(a.stoppedSeconds) : nil
+        movingFraction = movingTotal > 0 ? min(1, max(0, a.movingSeconds / movingTotal)) : nil
+        elevationGain = a.altitudeGain.map { String(format: "%.0f", $0) }
+        batteryMin = a.batteryMin.map { String(format: "%.2f", $0) }
 
         let km = a.gpsDistanceKm ?? a.odometerDistanceKm
         distance = km.map { String(format: $0 < 10 ? "%.2f" : "%.1f", $0) }
-        duration = RecordingFormat.clock(a.duration)
+        duration = RecordingFormat.clock(session.duration ?? a.duration)
         maxSpeed = a.maxSpeed.map { String(format: "%.0f", $0) }
         maxRPM = a.maxRPM.map { Int($0).formatted(.number.locale(Locale(identifier: "id_ID"))) }
         avgSpeed = a.avgMovingSpeed.map { String(format: "Ø %.0f km/h", $0) }
@@ -127,123 +146,10 @@ struct TripShareCard: View {
 
     var body: some View {
         switch format {
-        case .story: story
+        case .story, .feed:
+            RichRideShareCard(content: content, format: format, theme: theme, speedColors: speedColors)
         case .sticker: sticker
         }
-    }
-
-    // MARK: Story
-
-    private var story: some View {
-        ZStack {
-            LinearGradient(colors: theme.colors, startPoint: .top, endPoint: .bottom)
-            RadialGradient(colors: [theme.glow.opacity(0.28), .clear], center: .init(x: 0.5, y: 0.36),
-                           startRadius: 10, endRadius: 260)
-
-            VStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("AEROX 155 · RIDE LOG")
-                        .font(.system(size: 10, weight: .heavy))
-                        .tracking(2.5)
-                        .foregroundStyle(theme.glow)
-                    Text(content.title ?? "Ride")
-                        .font(.system(size: 26, weight: .heavy, design: .rounded))
-                        .foregroundStyle(.white)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.6)
-                    Text(content.dateText)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.6))
-                }
-
-                Group {
-                    if content.route.count > 1 {
-                        RouteSilhouette(points: content.route, speedColors: speedColors, lineWidth: 4.5)
-                    } else {
-                        SpeedSparkline(points: content.speedSeries, color: theme.glow, lineWidth: 3)
-                            .padding(.vertical, 60)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .frame(height: 250)
-                .padding(.vertical, 14)
-
-                Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 14) {
-                    GridRow {
-                        bigStat(content.distance ?? "—", unit: "km", label: "Jarak")
-                        bigStat(content.duration, unit: nil, label: "Waktu")
-                    }
-                    GridRow {
-                        bigStat(content.maxSpeed ?? "—", unit: "km/h", label: "Kecepatan maks")
-                        bigStat(content.maxRPM ?? "—", unit: "rpm", label: "RPM maks")
-                    }
-                }
-
-                HStack(spacing: 6) {
-                    if let v = content.avgSpeed { chip(v, icon: "speedometer") }
-                    if let v = content.maxCoolant { chip(v, icon: "thermometer.medium") }
-                    if let v = content.topMode { chip(v, icon: "waveform.path.ecg") }
-                }
-                .padding(.top, 16)
-
-                Spacer(minLength: 10)
-
-                if content.speedSeries.count > 1 && content.route.count > 1 {
-                    SpeedSparkline(points: content.speedSeries, color: theme.glow, lineWidth: 1.8)
-                        .frame(height: 44)
-                        .padding(.bottom, 10)
-                }
-
-                HStack {
-                    Text("TelAerox")
-                        .font(.system(size: 12, weight: .heavy, design: .rounded))
-                        .foregroundStyle(.white)
-                    Spacer()
-                    Text("data langsung dari ECU")
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.5))
-                }
-            }
-            .padding(.horizontal, 26)
-            .padding(.top, 34)
-            .padding(.bottom, 24)
-        }
-        .frame(width: format.size.width, height: format.size.height)
-    }
-
-    private func bigStat(_ value: String, unit: String?, label: String) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            HStack(alignment: .firstTextBaseline, spacing: 3) {
-                Text(value)
-                    .font(.system(size: 34, weight: .heavy, design: .rounded).monospacedDigit())
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.5)
-                if let unit {
-                    Text(unit)
-                        .font(.system(size: 12, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.6))
-                }
-            }
-            Text(label.uppercased())
-                .font(.system(size: 9, weight: .bold))
-                .tracking(1.2)
-                .foregroundStyle(.white.opacity(0.5))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func chip(_ text: String, icon: String) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: icon)
-            Text(text)
-                .lineLimit(1)
-        }
-        .font(.system(size: 10, weight: .semibold))
-        .foregroundStyle(.white.opacity(0.9))
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(Color.white.opacity(0.12), in: Capsule())
     }
 
     // MARK: Stiker
@@ -306,13 +212,19 @@ struct RouteSilhouette: View {
             let style = StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
 
             var full = Path()
-            full.addLines(pts)
+            for i in pts.indices {
+                if i == 0 || points[i].segment != points[i - 1].segment {
+                    full.move(to: pts[i])
+                } else {
+                    full.addLine(to: pts[i])
+                }
+            }
             // Glow tipis di bawah garis utama.
             ctx.stroke(full, with: .color(.white.opacity(0.14)),
                        style: StrokeStyle(lineWidth: lineWidth * 3, lineCap: .round, lineJoin: .round))
 
             if speedColors {
-                for i in 1..<pts.count {
+                for i in 1..<pts.count where points[i].segment == points[i - 1].segment {
                     var seg = Path()
                     seg.move(to: pts[i - 1])
                     seg.addLine(to: pts[i])
@@ -364,16 +276,22 @@ struct SpeedSparkline: View {
                 CGPoint(x: (p.t - t0) / (t1 - t0) * size.width,
                         y: size.height - p.v / vmax * (size.height - lineWidth) - lineWidth / 2)
             }
-            var line = Path()
-            line.addLines(pts)
-            var area = line
-            area.addLine(to: CGPoint(x: size.width, y: size.height))
-            area.addLine(to: CGPoint(x: 0, y: size.height))
-            area.closeSubpath()
-            ctx.fill(area, with: .linearGradient(Gradient(colors: [color.opacity(0.35), color.opacity(0)]),
-                                                 startPoint: .zero, endPoint: CGPoint(x: 0, y: size.height)))
-            ctx.stroke(line, with: .color(color),
-                       style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round))
+            // Jangan menggambar garis/area melintasi jeda data.
+            let groups = Dictionary(grouping: points.indices, by: { points[$0].segment })
+            for indices in groups.values {
+                let segment = indices.map { pts[$0] }
+                guard segment.count > 1, let first = segment.first, let last = segment.last else { continue }
+                var line = Path()
+                line.addLines(segment)
+                var area = line
+                area.addLine(to: CGPoint(x: last.x, y: size.height))
+                area.addLine(to: CGPoint(x: first.x, y: size.height))
+                area.closeSubpath()
+                ctx.fill(area, with: .linearGradient(Gradient(colors: [color.opacity(0.35), color.opacity(0)]),
+                                                     startPoint: .zero, endPoint: CGPoint(x: 0, y: size.height)))
+                ctx.stroke(line, with: .color(color),
+                           style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round))
+            }
         }
     }
 }
@@ -416,7 +334,7 @@ struct TripShareCardSheet: View {
                     .pickerStyle(.segmented)
 
                     VStack(spacing: 0) {
-                        if format == .story {
+                        if format != .sticker {
                             HStack {
                                 Text("Tema")
                                 Spacer()
@@ -441,7 +359,7 @@ struct TripShareCardSheet: View {
                         Toggle(isOn: $hideEnds) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Sembunyikan awal & akhir rute")
-                                Text("Potong 200 m pertama & terakhir supaya lokasi rumah/kantor tidak ketahuan.")
+                                Text("Potong 200 m pertama & terakhir. Bentuk rute tetap bisa dikenali; periksa pratinjau sebelum berbagi.")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -520,7 +438,7 @@ struct TripShareCardSheet: View {
     private func renderPNG() -> Data? {
         let renderer = ImageRenderer(content: card.environment(\.colorScheme, .dark))
         renderer.scale = 3
-        renderer.isOpaque = format == .story
+        renderer.isOpaque = format != .sticker
         #if canImport(UIKit)
         return renderer.uiImage?.pngData()
         #else

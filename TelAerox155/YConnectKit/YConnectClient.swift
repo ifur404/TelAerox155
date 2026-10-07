@@ -159,7 +159,21 @@ public final class YConnectClient: NSObject {
     // MARK: - Keep-alive 0xA6
 
     private var keepAliveTimer: Timer?
+    private var keepAliveSchedule = KeepAliveSchedule()
     private var periodicCounter: UInt8 = 0
+    private var isInBackground = false
+
+    /// Timer watchdog yang terlambat setelah suspend bukan bukti CCU mati.
+    /// Di background, putus/sambung ditangani callback CoreBluetooth.
+    public func setBackgrounded(_ backgrounded: Bool) {
+        isInBackground = backgrounded
+        if backgrounded {
+            disarmStreamWatchdog()
+        } else if state == .streaming {
+            armStreamWatchdog()
+        }
+        sendPeriodicTick()
+    }
 
     public private(set) var state: ClientState = .poweredOff {
         didSet { delegate?.client(self, didChangeState: state) }
@@ -320,6 +334,7 @@ public final class YConnectClient: NSObject {
 
     private func armStreamWatchdog() {
         disarmStreamWatchdog()
+        guard !isInBackground else { return }
         let t = Timer(timeInterval: streamWatchdogSeconds, repeats: false) { [weak self] _ in
             guard let self else { return }
             self.disarmStreamWatchdog()
@@ -355,40 +370,43 @@ public final class YConnectClient: NSObject {
         }
         onAuthStage?("keep-alive 0xA6 1 Hz dimulai (policy=\(keepAlivePolicy.rawValue))")
         sendPeriodicTick()   // t=0
-        let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.sendPeriodicTick()
-        }
-        RunLoop.main.add(t, forMode: .common)
-        keepAliveTimer = t
     }
 
     private func stopKeepAlive() {
         keepAliveTimer?.invalidate()
         keepAliveTimer = nil
+        keepAliveSchedule = KeepAliveSchedule()
     }
 
     private func sendPeriodicTick() {
-        guard let p = peripheral, let tx = txChar, state == .streaming else { return }
-        guard p.canSendWriteWithoutResponse else { return }   // lewati tick ini kalau buffer penuh
-
-        if keepAlivePolicy == .full {
+        guard keepAlivePolicy != .off, let p = peripheral, let tx = txChar,
+              state == .streaming, !userRequestedStop else { return }
+        // Buffer penuh: jadwal belum dikonsumsi. Coba lagi ketika BLE siap.
+        guard p.canSendWriteWithoutResponse else { return }
+        let uptime = ProcessInfo.processInfo.systemUptime
+        guard let frame = keepAliveSchedule.next(at: uptime, policy: keepAlivePolicy) else { return }
+        switch frame {
+        case .clock:
             let frame058A = PeriodicFrame.build058A(batteryPercent: batteryLevelProvider(),
                                                      counter: periodicCounter)
             onRawFrame?(.tx, "058A #\(periodicCounter) len=\(frame058A.count)B hex=\(BLELogFormat.hex(frame058A))")
             periodicCounter = periodicCounter < 254 ? periodicCounter + 1 : 0
             p.writeValue(Data(frame058A), for: tx, type: .withoutResponse)
-        }
-
-        // 058B ~100 ms setelah 058A (atau di t=0 langsung kalau policy == .notifyOnly).
-        let delay: TimeInterval = keepAlivePolicy == .full ? 0.1 : 0
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self, let p = self.peripheral, let tx = self.txChar, self.state == .streaming,
-                  p.canSendWriteWithoutResponse else { return }
-            let frame058B = PeriodicFrame.build058B(counter: self.periodicCounter)
-            self.onRawFrame?(.tx, "058B #\(self.periodicCounter) len=\(frame058B.count)B hex=\(BLELogFormat.hex(frame058B))")
-            self.periodicCounter = self.periodicCounter < 254 ? self.periodicCounter + 1 : 0
+        case .notification:
+            let frame058B = PeriodicFrame.build058B(counter: periodicCounter)
+            onRawFrame?(.tx, "058B #\(periodicCounter) len=\(frame058B.count)B hex=\(BLELogFormat.hex(frame058B))")
+            periodicCounter = periodicCounter < 254 ? periodicCounter + 1 : 0
             p.writeValue(Data(frame058B), for: tx, type: .withoutResponse)
         }
+        // Timer hanya berjalan saat iOS memberi waktu eksekusi. Callback RX
+        // memakai jadwal yang sama saat timer tertunda, tanpa kirim dobel.
+        keepAliveTimer?.invalidate()
+        let delay = max(0.001, (keepAliveSchedule.deadline ?? uptime + 1) - ProcessInfo.processInfo.systemUptime)
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+            self?.sendPeriodicTick()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        keepAliveTimer = timer
     }
 
     // MARK: - RX handling
@@ -400,7 +418,10 @@ public final class YConnectClient: NSObject {
 
         onRawFrame?(.rx, "type=\(String(format: "0x%02X", raw.first ?? 0)) len=\(raw.count)B hex=\(Self.redactedRXHex(raw))")
 
-        if state == .streaming { armStreamWatchdog() }   // frame valid apa pun = tanda hidup
+        if state == .streaming {
+            armStreamWatchdog()   // frame valid apa pun = tanda hidup
+            sendPeriodicTick()
+        }
 
         // Balasan auth?
         if raw.first == 0x5A, let sp = StartProcessing(raw) {
@@ -642,6 +663,11 @@ extension YConnectClient: CBCentralManagerDelegate {
 }
 
 extension YConnectClient: CBPeripheralDelegate {
+    public func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+        guard peripheral === self.peripheral else { return }
+        sendPeriodicTick()
+    }
+
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard let svc = peripheral.services?.first(where: {
             $0.uuid == CBUUID(string: NUS.serviceString)

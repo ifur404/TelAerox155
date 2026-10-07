@@ -27,7 +27,8 @@ struct TripQualityCard: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             if !analysis.gaps.isEmpty {
-                DisclosureGroup("Bagian data yang kosong (\(analysis.gaps.count))") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Jeda data · \(analysis.gaps.count)").font(.subheadline.weight(.semibold))
                     ForEach(worstGaps) { gap in
                         Button { playback.seek(to: gap.start) } label: {
                             VStack(alignment: .leading, spacing: 3) {
@@ -65,14 +66,6 @@ struct TripPhoneSummary: View {
                 if let peak = analysis.maxMotionPeak {
                     TripStatTile(title: "Puncak gerakan HP", value: String(format: "%.1f m/s²", peak), icon: "waveform.path")
                 }
-                if let gain = analysis.altitudeGain, let loss = analysis.altitudeLoss {
-                    TripStatTile(title: "Total naik / turun", value: String(format: "%.0f / %.0f m", gain, loss), icon: "mountain.2",
-                                 detail: analysis.elevationSource)
-                }
-                if let up = analysis.maxGrade, let down = analysis.minGrade {
-                    TripStatTile(title: "Estimasi kemiringan", value: String(format: "%+.1f / %+.1f%%", up, down), icon: "angle",
-                                 detail: "Ruas ≥100 m; bergantung akurasi elevasi")
-                }
             }
             Text("Posisi iPhone: \(analysis.samples.first?.placement.title ?? PhonePlacement.unknown.title)")
                 .font(.caption).foregroundStyle(.secondary)
@@ -82,6 +75,23 @@ struct TripPhoneSummary: View {
             }
             Text("Gerakan diringkas dari target 50 sampel/detik: puncak dan RMS per jendela. Orientasi mengikuti HP. Sensor yang tidak didukung atau tidak diizinkan akan kosong.")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
+struct TripElevationSummary: View {
+    let analysis: TripAnalysis
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+            if let gain = analysis.altitudeGain, let loss = analysis.altitudeLoss {
+                TripStatTile(title: "Total naik / turun", value: String(format: "%.0f / %.0f m", gain, loss), icon: "mountain.2",
+                             detail: analysis.elevationSource)
+            }
+            if let up = analysis.maxGrade, let down = analysis.minGrade {
+                TripStatTile(title: "Estimasi kemiringan", value: String(format: "%+.1f / %+.1f%%", up, down), icon: "angle",
+                             detail: "Ruas ≥100 m; bergantung akurasi elevasi")
+            }
         }
     }
 }
@@ -240,33 +250,190 @@ struct TripSensorReadout: View {
 struct TripEventsCard: View {
     let analysis: TripAnalysis
     let playback: TripPlayback
+    @State private var showInfo = false
+    @State private var showAll = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    private let previewCount = 4
+
+    private var events: [TripEvent] {
+        analysis.events.sorted { $0.t < $1.t }
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Ambang awal: akselerasi/perlambatan ±2,5 m/s²; guncangan vertikal ≥8 m/s² saat melaju dengan HP di holder. Jarak antar kejadian sejenis minimal 10 detik. Hasil masih perkiraan.")
-                .font(.caption).foregroundStyle(.secondary)
-            if analysis.events.isEmpty {
-                Text("Tidak ada kejadian yang memenuhi ambang pada data valid.").font(.caption).foregroundStyle(.secondary)
+        let items = events
+        let visible = Array(items.prefix(previewCount))
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("ESTIMASI")
+                    .font(.system(.caption2, design: .monospaced).weight(.medium))
+                    .tracking(1.5)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button { showInfo = true } label: {
+                    Image(systemName: "info.circle")
+                        .font(.body)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Tentang deteksi kejadian")
+            }
+
+            if items.isEmpty {
+                Text("Tidak ada kejadian terdeteksi")
+                    .font(.subheadline.weight(.medium))
+                    .padding(.bottom, 6)
+                Text("Data yang tersedia tidak memenuhi ambang deteksi.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .padding(.bottom, 8)
             } else {
-                ForEach(TripEvent.Kind.allCases, id: \.rawValue) { kind in
-                    let items = analysis.events.filter { $0.kind == kind }
-                    if !items.isEmpty {
-                        DisclosureGroup("\(kind.title) · \(items.count)") {
-                            ForEach(Array(items.prefix(50))) { event in
-                                Button { playback.seek(to: event.t) } label: {
-                                    Label("\(RecordingFormat.clock(event.t)) · \(String(format: "%+.2f m/s²", event.value))", systemImage: kind.icon)
-                                        .font(.caption).foregroundStyle(.white)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .padding(.vertical, 4)
-                                }.buttonStyle(.plain)
+                // Ringkasan angka tanpa badge/kartu tambahan.
+                let summaryLayout = dynamicTypeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+                    : AnyLayout(HStackLayout(alignment: .top, spacing: 16))
+                summaryLayout {
+                    ForEach(TripEvent.Kind.allCases, id: \.rawValue) { kind in
+                        if dynamicTypeSize.isAccessibilitySize {
+                            HStack {
+                                Text(title(kind)).font(.caption).foregroundStyle(.secondary)
+                                Spacer()
+                                Text(items.filter { $0.kind == kind }.count.formatted())
+                                    .font(.system(.title2, design: .monospaced).weight(.medium))
                             }
-                            if items.count > 50 { Text("Menampilkan 50 kejadian pertama.").font(.caption2).foregroundStyle(.secondary) }
+                        } else {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(items.filter { $0.kind == kind }.count.formatted())
+                                    .font(.system(.title2, design: .monospaced).weight(.medium))
+                                    .foregroundStyle(.primary)
+                                Text(title(kind))
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
                 }
+                .padding(.bottom, 8)
+                Divider()
+                ForEach(visible) { event in
+                    eventRow(event)
+                    Divider()
+                }
+                if items.count > previewCount {
+                    Button { showAll = true } label: {
+                        HStack {
+                            Text("Lihat semua \(items.count) kejadian")
+                            Spacer()
+                            Image(systemName: "arrow.up.right")
+                        }
+                        .font(.subheadline.weight(.medium))
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.primary)
+                }
             }
         }
+        .sheet(isPresented: $showAll) {
+            NavigationStack {
+                List {
+                    Section {
+                        ForEach(items) { event in
+                            eventRow(event)
+                                .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12))
+                                .listRowBackground(RecordingPalette.card)
+                        }
+                    } header: {
+                        Text("\(items.count) kejadian · Estimasi")
+                    } footer: {
+                        Text("Pilih kejadian untuk kembali ke detail pada waktu tersebut.")
+                    }
+                }
+                .listStyle(.insetGrouped)
+                .scrollContentBackground(.hidden)
+                .background(RecordingPalette.background)
+                .navigationTitle("Kejadian perjalanan")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Selesai") { showAll = false }
+                    }
+                }
+            }
+            .preferredColorScheme(.dark)
+        }
+        .alert("Tentang kejadian", isPresented: $showInfo) {
+            Button("Tutup", role: .cancel) {}
+        } message: {
+            Text("Hasil masih estimasi, bukan penilaian gaya berkendara. Akselerasi/perlambatan dihitung dari perubahan kecepatan dengan ambang ±2,5 m/s². Perlambatan tidak selalu berarti tuas rem ditekan. Guncangan memakai percepatan vertikal ≥8 m/s² saat melaju dengan HP di holder. Jarak kejadian sejenis minimal 10 detik. Ketuk baris untuk melihat momennya pada replay.")
+        }
     }
+
+    private func eventRow(_ event: TripEvent) -> some View {
+        Button {
+            playback.seek(to: event.t)
+            showAll = false
+        } label: {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    Text(RecordingFormat.clock(event.t))
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .fixedSize()
+                    eventLabel(event)
+                    Spacer(minLength: 8)
+                    eventValue(event)
+                }
+                // Ukuran teks aksesibilitas: pindahkan waktu, jangan mengecilkan huruf.
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(RecordingFormat.clock(event.t))
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    eventLabel(event)
+                    eventValue(event)
+                }
+            }
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(title(event.kind)), \(RecordingFormat.clock(event.t)), \(String(format: "%+.2f", event.value)) meter per detik kuadrat")
+        .accessibilityHint("Lompat ke waktu kejadian pada replay")
+    }
+
+    private func eventLabel(_ event: TripEvent) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: event.kind.icon)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Text(title(event.kind))
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+    }
+
+    private func eventValue(_ event: TripEvent) -> some View {
+        VStack(alignment: .trailing, spacing: 3) {
+            Text(String(format: event.kind == .bump ? "%.2f" : "%+.2f", event.value))
+                .font(.system(.subheadline, design: .monospaced).weight(.medium))
+                .foregroundStyle(.primary)
+            Text("m/s²").font(.caption2).foregroundStyle(.secondary)
+        }
+        .fixedSize()
+    }
+
+    private func title(_ kind: TripEvent.Kind) -> String {
+        switch kind {
+        case .acceleration: return "Akselerasi"
+        case .braking: return "Perlambatan"
+        case .bump: return "Guncangan HP"
+        }
+    }
+
 }
 
 struct TripElevationProfile: View {

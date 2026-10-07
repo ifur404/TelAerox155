@@ -62,7 +62,11 @@ final class SessionRecorder: ObservableObject {
     }
 
     /// Riwayat permanen semua sesi — lihat `RecordingLibrary`.
-    let library = RecordingLibrary()
+    let library: RecordingLibrary
+
+    init(library: RecordingLibrary = RecordingLibrary()) {
+        self.library = library
+    }
 
     @Published private(set) var isRecording = false
     @Published private(set) var format: Format = .csv
@@ -71,6 +75,9 @@ final class SessionRecorder: ObservableObject {
     /// Baris data yang sudah ditulis (baris CSV tanpa header / frame BLE Raw).
     @Published private(set) var lineCount: Int = 0
     @Published private(set) var startedAt: Date?
+    /// Dipanggil sinkron setelah seluruh state sesi siap, bukan di willSet
+    /// @Published. GPS harus mulai saat tombol ditekan di foreground.
+    var onRecordingChanged: ((Bool) -> Void)?
     /// Terisi kalau rekaman terakhir berhenti KARENA limit (bukan ditekan
     /// user) — ditampilkan sebagai pesan info di UI.
     @Published private(set) var stopReason: String?
@@ -162,7 +169,7 @@ final class SessionRecorder: ObservableObject {
     @discardableResult
     func start(format: Format, includesPhoneSensors: Bool = true, placement: PhonePlacement = .unknown) -> URL? {
         stop()   // jaga-jaga kalau ada rekaman lama yang belum ditutup
-        guard let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+        guard let dir = library.documentsDirectory else {
             return nil
         }
         let url = dir.appendingPathComponent(Self.makeFileName(format: format))
@@ -187,7 +194,9 @@ final class SessionRecorder: ObservableObject {
         if format == .csv {
             write(CSVCodec.row(activeCSVColumns) + "\n", countsAsLine: false)
         }
+        guard isRecording else { return nil }
         syncIndex()
+        onRecordingChanged?(true)
         return url
     }
 
@@ -201,6 +210,18 @@ final class SessionRecorder: ObservableObject {
         isRecording = false
         stopReason = reason
         syncIndex(endedAt: Date())
+        onRecordingChanged?(false)
+    }
+
+    /// Simpan buffer dan indeks saat masuk background, tanpa menutup sesi.
+    func checkpoint() {
+        guard isRecording else { return }
+        do {
+            try fileHandle?.synchronize()
+            syncIndex()
+        } catch {
+            stop(reason: "Berhenti — gagal menyimpan rekaman: \(error.localizedDescription)")
+        }
     }
 
     private func write(_ text: String, countsAsLine: Bool = true) {

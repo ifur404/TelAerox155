@@ -189,6 +189,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         let c = YConnectClient(credentials: credentials, targetPeripheralID: peripheralID,
                                restoresState: !pairing)
         c.keepAlivePolicy = keepAlivePolicy
+        c.setBackgrounded(appState == "background")
         #if canImport(UIKit)
         UIDevice.current.isBatteryMonitoringEnabled = true
         c.batteryLevelProvider = {
@@ -310,6 +311,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     ///   dikunci. Throttle di sini yang menjaga hasilnya tetap 1 baris/detik
     ///   walau dipicu dari dua tempat.
     private func sampleCSVIfDue() {
+        recorder.enforceDurationLimitIfNeeded()
         guard recorder.isRecording, recorder.format == .csv else { return }
         let now = Date()
         if let last = lastCSVSampleAt, now.timeIntervalSince(last) < 0.95 { return }
@@ -339,30 +341,24 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     /// bisa dipanggil pertama kali dari background dengan izin "Saat
     /// Digunakan", jadi app kehilangan salah satu "penahan" background-nya.
     private func bindRecorderToLocation() {
-        recorder.$isRecording
-            .combineLatest(recorder.$format)
-            .map { isRecording, format in isRecording && format == .csv }
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] recordingCSV in
-                guard let self else { return }
-                self.lastCSVSampleAt = nil
-                if recordingCSV {
-                    self.startRecordingTimer()
-                    if self.recorder.includesPhoneSensors {
-                        self.location.start()
-                        self.phoneSensors.start()
-                    }
-                    self.sampleCSVIfDue()
-                } else {
-                    self.location.stop()
-                    self.phoneSensors.stop()
-                    if !self.isActive && !self.isConnecting && !self.recorder.isRecording {
-                        self.stopRecordingTimer()
-                    }
+        recorder.onRecordingChanged = { [weak self] isRecording in
+            guard let self else { return }
+            self.lastCSVSampleAt = nil
+            if isRecording {
+                self.startRecordingTimer()
+                if self.recorder.format == .csv && self.recorder.includesPhoneSensors {
+                    self.location.start()
+                    self.phoneSensors.start()
+                }
+                self.sampleCSVIfDue()
+            } else {
+                self.location.stop()
+                self.phoneSensors.stop()
+                if !self.isActive && !self.isConnecting {
+                    self.stopRecordingTimer()
                 }
             }
-            .store(in: &cancellables)
+        }
 
         // Update lokasi juga membangunkan sampler saat background, termasuk
         // ketika BLE terputus. Throttle yang sama mencegah baris duplikat.
@@ -396,12 +392,16 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)
             .sink { [weak self] _ in
                 self?.appState = "background"
+                self?.client?.setBackgrounded(true)
                 self?.recorder.appendRaw(.info, "=== app → background ===")
+                self?.recorder.checkpoint()
             }
             .store(in: &cancellables)
         NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)
             .sink { [weak self] _ in
                 self?.appState = "foreground"
+                self?.client?.setBackgrounded(false)
+                self?.recorder.enforceDurationLimitIfNeeded()
                 self?.recorder.appendRaw(.info, "=== app → foreground ===")
             }
             .store(in: &cancellables)

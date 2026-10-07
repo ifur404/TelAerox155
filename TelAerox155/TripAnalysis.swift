@@ -229,6 +229,8 @@ nonisolated struct TripAnalysis: Sendable {
     var maxFiError: Double = 0
     var maxDTC: Double = 0
     var fiLampOn = false
+    /// Hanya nilai diagnostik valid, bukan sekadar kolom CSV yang tersedia.
+    var hasDiagnosticData = false
 
     // MARK: Seri siap-plot (sudah di-downsample)
     var speedSeries: [ChartPoint] = []
@@ -404,9 +406,18 @@ nonisolated struct TripAnalysis: Sendable {
                     s.odometer = o
                     lastOdo = o
                 }
-                if freshECU("fiError"), let v = num(iFi) { a.maxFiError = max(a.maxFiError, v) }
-                if freshECU("dtc"), let v = num(iDTC) { a.maxDTC = max(a.maxDTC, v) }
-                if freshECU("fiWarningLamp"), let v = num(iLamp), v > 0 { a.fiLampOn = true }
+                if freshECU("fiError"), let v = num(iFi), v >= 0 {
+                    a.hasDiagnosticData = true
+                    a.maxFiError = max(a.maxFiError, v)
+                }
+                if freshECU("dtc"), let v = num(iDTC), v >= 0 {
+                    a.hasDiagnosticData = true
+                    a.maxDTC = max(a.maxDTC, v)
+                }
+                if freshECU("fiWarningLamp"), let v = num(iLamp), v >= 0 {
+                    a.hasDiagnosticData = true
+                    if v > 0 { a.fiLampOn = true }
+                }
             }
             if a.vin == nil { a.vin = str(iVIN) }
             if a.modelCode == nil { a.modelCode = str(iModel) }

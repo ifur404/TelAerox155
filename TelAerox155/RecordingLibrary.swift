@@ -61,20 +61,23 @@ final class RecordingLibrary: ObservableObject {
     static let filePrefix = "telaerox-rec_"
 
     private let fm = FileManager.default
+    private let directoryOverride: URL?
 
     var documentsDirectory: URL? {
-        fm.urls(for: .documentDirectory, in: .userDomainMask).first
+        directoryOverride ?? fm.urls(for: .documentDirectory, in: .userDomainMask).first
     }
 
     private var indexURL: URL? {
-        guard let dir = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+        guard let dir = directoryOverride ?? fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             return nil
         }
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("recordings-index.json")
     }
 
-    init() {
+    /// Override dipakai pengujian agar tidak menyentuh rekaman pengguna.
+    init(directory: URL? = nil) {
+        directoryOverride = directory
         reload(activeFileName: nil)
     }
 

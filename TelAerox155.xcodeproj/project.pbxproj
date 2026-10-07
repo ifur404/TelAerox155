@@ -281,6 +281,7 @@
 				ENABLE_RESOURCE_ACCESS_USB = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TelAerox155/Info.plist;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Terhubung ke Yamaha Aerox 155 (BCC) via Bluetooth untuk menampilkan telemetri.";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Merekam koordinat GPS pada CSV rekaman sesi (opsional), termasuk saat app diminimize.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Merekam koordinat GPS pada CSV rekaman sesi (opsional).";
@@ -289,7 +290,6 @@
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
-				INFOPLIST_FILE = TelAerox155/Info.plist;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
@@ -335,6 +335,7 @@
 				ENABLE_RESOURCE_ACCESS_USB = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TelAerox155/Info.plist;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Terhubung ke Yamaha Aerox 155 (BCC) via Bluetooth untuk menampilkan telemetri.";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Merekam koordinat GPS pada CSV rekaman sesi (opsional), termasuk saat app diminimize.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Merekam koordinat GPS pada CSV rekaman sesi (opsional).";
@@ -343,7 +344,6 @@
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
-				INFOPLIST_FILE = TelAerox155/Info.plist;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;

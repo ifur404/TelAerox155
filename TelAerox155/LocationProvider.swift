@@ -7,8 +7,8 @@ import CoreLocation
 /// mempengaruhi kontrak keamanan read-only di AGENTS.md sama sekali (tidak
 /// ada write ke motor); ini cuma sumber data tambahan buat log lokal user.
 ///
-/// Diminta jalan juga di BACKGROUND (sama seperti rekaman BLE) — konsekuensi:
-/// butuh izin lokasi "Selalu" (Always), bukan cuma "Saat Digunakan".
+/// Sesi lokasi dimulai dari foreground dan dilanjutkan di background dengan
+/// indikator sistem. Izin Saat Digunakan cukup untuk sesi aktif tersebut.
 final class LocationProvider: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published private(set) var authorizationStatus: CLAuthorizationStatus
     @Published private(set) var lastLocation: CLLocation?

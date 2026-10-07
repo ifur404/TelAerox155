@@ -134,6 +134,7 @@ struct TripRouteMap: View {
     let playback: TripPlayback
     let accent: Color
     @Binding var position: MapCameraPosition
+    @State private var selectedEvent: TripEvent?
 
     var body: some View {
         MapReader { proxy in
@@ -157,12 +158,25 @@ struct TripRouteMap: View {
 
                 ForEach(mapEvents) { event in
                     Annotation(event.kind.title, coordinate: CLLocationCoordinate2D(latitude: event.lat!, longitude: event.lon!)) {
-                        Button { playback.seek(to: event.t) } label: {
-                            pin(event.kind.icon, color: event.kind == .bump ? .purple : .orange)
+                        Button {
+                            selectedEvent = event
+                            playback.seek(to: event.t)
+                        } label: {
+                            Image(systemName: event.kind.icon)
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 22, height: 22)
+                                .background(eventColor(event.kind), in: Circle())
+                                .overlay(Circle().stroke(.white, lineWidth: selectedEvent?.id == event.id ? 2.5 : 1))
+                                .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+                                .frame(width: 44, height: 44)
+                                .contentShape(Circle())
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("\(event.kind.title), \(RecordingFormat.clock(event.t))")
+                        .accessibilityHint("Tampilkan detail dan lompat ke waktu kejadian")
                     }
+                    .annotationTitles(.hidden)
                 }
 
                 if let first = analysis.route.first {
@@ -205,8 +219,50 @@ struct TripRouteMap: View {
                 // Tap di dekat rute → lompat ke waktu titik terdekat.
                 guard let c = proxy.convert(screenPoint, from: .local),
                       let p = analysis.nearestRoutePoint(lat: c.latitude, lon: c.longitude) else { return }
+                selectedEvent = nil
                 playback.seek(to: p.t)
             }
+            .overlay(alignment: .bottomLeading) {
+                if let event = selectedEvent {
+                    HStack(spacing: 10) {
+                        Image(systemName: event.kind.icon)
+                            .foregroundStyle(eventColor(event.kind))
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(eventTitle(event.kind)).font(.caption.weight(.semibold))
+                            Text("\(RecordingFormat.clock(event.t)) · \(String(format: "%+.2f m/s²", event.value)) · Estimasi")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                        Button { selectedEvent = nil } label: {
+                            Image(systemName: "xmark")
+                                .font(.caption.weight(.semibold))
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Tutup detail kejadian")
+                    }
+                    .padding(.leading, 12)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                    .padding(10)
+                }
+            }
+        }
+    }
+
+    private func eventColor(_ kind: TripEvent.Kind) -> Color {
+        switch kind {
+        case .acceleration: return .orange
+        case .braking: return .red
+        case .bump: return .purple
+        }
+    }
+
+    private func eventTitle(_ kind: TripEvent.Kind) -> String {
+        switch kind {
+        case .acceleration: return "Akselerasi kuat"
+        case .braking: return "Perlambatan kuat"
+        case .bump: return "Guncangan iPhone"
         }
     }
 
@@ -215,9 +271,10 @@ struct TripRouteMap: View {
         let coordinate: CLLocationCoordinate2D
     }
 
-    /// Maks 30 event terkuat dengan posisi yang valid agar peta tetap terbaca.
+    /// Perlambatan hanya ditampilkan di daftar kejadian, bukan di peta.
+    /// Maks 30 event lainnya dengan posisi valid agar peta tetap terbaca.
     private var mapEvents: [TripEvent] {
-        Array(analysis.events.filter { $0.lat != nil && $0.lon != nil }
+        Array(analysis.events.filter { $0.kind != .braking && $0.lat != nil && $0.lon != nil }
             .sorted { abs($0.value) > abs($1.value) }.prefix(30))
     }
 
@@ -289,9 +346,6 @@ struct TripMapCard: View {
                 .accessibilityLabel("Buka peta layar penuh")
             }
             TripSpeedLegend(scale: analysis.routeSpeedScale)
-            Text("Tap rute untuk lompat ke momen itu. Warna = kecepatan relatif terhadap yang tercepat di perjalanan ini.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
         }
         .fullScreenCover(isPresented: $showFullScreen) {
             TripMapFullScreen(analysis: analysis, playback: playback, accent: accent)
@@ -392,22 +446,7 @@ struct TripPlaybackBar: View {
                 readout(value: fmt(playback.sample?.coolant, "%.0f"), unit: "°C", color: TripPalette.coolant)
                 }
             }
-            if playback.analysis.hasPhoneColumns {
-                HStack(spacing: 8) {
-                if !playback.analysis.accelerationSeries.isEmpty {
-                    readout(value: fmt(playback.sample?.acceleration, "%+.1f"), unit: "m/s²", color: .orange)
-                }
-                if !playback.analysis.motionPeakSeries.isEmpty {
-                    readout(value: fmt(playback.sample?.motionPeak, "%.1f"), unit: "puncak · m/s²", color: .pink)
-                }
-                if playback.analysis.availableColumns.contains("gps_age_s") {
-                    readout(value: fmt(playback.sample?.gpsAge, "%.1f"), unit: "usia GPS · s", color: .white)
-                }
-                if !playback.analysis.phoneBatterySeries.isEmpty {
-                    readout(value: fmt(playback.sample?.phoneBattery, "%.0f"), unit: "% iPhone", color: .green)
-                }
-                }
-            }
+            // Pembacaan sensor teknis ada di disclosure sensor; bar tetap ringkas.
             HStack(spacing: 10) {
                 Button {
                     playback.togglePlay()
@@ -478,48 +517,110 @@ struct TripPlaybackBar: View {
     }
 }
 
-// MARK: - Statistik
+// MARK: - Ringkasan perjalanan
 
-struct TripStatsGrid: View {
+struct TripQualityWarning: View {
     let analysis: TripAnalysis
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Ambang tampilan, bukan penilaian kesehatan kendaraan.
+            if analysis.availableColumns.contains("rpm"), analysis.ecuCoverage < 90 {
+                warning(String(format: "Data motor valid %.0f%%. Statistik motor hanya mewakili bagian yang terekam.", analysis.ecuCoverage))
+            }
+            if analysis.availableColumns.contains("gps_lat"), analysis.gpsCoverage < 90 {
+                warning(String(format: "GPS valid %.0f%%. Rute dan jarak GPS mungkin tidak lengkap.", analysis.gpsCoverage))
+            }
+            if analysis.recordingGapSeconds > 0 {
+                warning("Ada jeda rekaman \(RecordingFormat.duration(analysis.recordingGapSeconds)); kejadian dalam jeda tidak dapat dinilai.")
+            }
+        }
+        .font(.caption)
+    }
+
+    private func warning(_ text: String) -> some View {
+        Label(text, systemImage: "exclamationmark.triangle")
+            .foregroundStyle(.orange)
+    }
+}
+
+struct TripJourneySummary: View {
+    let analysis: TripAnalysis
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if analysis.movingSeconds + analysis.stoppedSeconds > 0 {
+                Text("Pada data valid: melaju \(RecordingFormat.duration(analysis.movingSeconds)), berhenti \(RecordingFormat.duration(analysis.stoppedSeconds)). \(analysis.stops.count) titik berhenti memenuhi ambang deteksi.")
+            } else {
+                Text("Data kecepatan belum cukup untuk merangkum waktu jalan dan berhenti.")
+            }
+            if let temperature = analysis.coolantMax {
+                Text(String(format: "Suhu mesin tertinggi yang terekam %.0f °C.", temperature))
+            }
+            if !analysis.events.isEmpty {
+                Text("\(analysis.events.count) kejadian terdeteksi sebagai estimasi. Pilih kejadian di bawah untuk melihat momennya.")
+            }
+        }
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
+    }
+}
+
+// MARK: - Statistik
+
+enum TripStatsGroup {
+    case overview, journey, vehicle, riding, elevation, estimates
+}
+
+struct TripStatsGrid: View {
+    let analysis: TripAnalysis
+    var group: TripStatsGroup = .overview
+    var duration: Double? = nil
+
+    var body: some View {
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-            if let km = analysis.gpsDistanceKm {
-                TripStatTile(title: "Jarak (GPS)", value: String(format: "%.2f km", km), icon: "point.topleft.down.to.point.bottomright.curvepath",
-                             detail: analysis.odometerDistanceKm.map { String(format: "Odometer: %.1f km", $0) })
-            } else if let km = analysis.odometerDistanceKm {
-                TripStatTile(title: "Jarak (odometer)", value: String(format: "%.1f km", km), icon: "road.lanes")
+            if group == .overview {
+                if let km = analysis.gpsDistanceKm {
+                    TripStatTile(title: "Jarak (GPS)", value: String(format: "%.2f km", km), icon: "point.topleft.down.to.point.bottomright.curvepath",
+                                 detail: analysis.odometerDistanceKm.map { String(format: "Odometer: %.1f km", $0) })
+                } else if let km = analysis.odometerDistanceKm {
+                    TripStatTile(title: "Jarak (odometer)", value: String(format: "%.1f km", km), icon: "road.lanes")
+                }
+                TripStatTile(title: "Durasi", value: RecordingFormat.duration(duration ?? analysis.duration), icon: "timer")
+                if let v = analysis.avgMovingSpeed {
+                    TripStatTile(title: "Rata-rata saat jalan", value: String(format: "%.1f km/h", v), icon: "speedometer",
+                                 detail: "ECU; GPS jika ECU kosong")
+                }
+                if let v = analysis.maxSpeed {
+                    TripStatTile(title: "Kecepatan maks", value: String(format: "%.0f km/h", v), icon: "bolt.fill",
+                                 detail: "ECU; GPS jika ECU kosong")
+                }
             }
-            if let v = analysis.maxSpeed {
-                TripStatTile(title: "Kecepatan maks", value: String(format: "%.0f km/h", v), icon: "bolt.fill",
-                             detail: analysis.avgMovingSpeed.map { String(format: "Rata-rata saat jalan %.1f", $0) })
-            }
-            if let v = analysis.maxRPM {
+            if group == .riding, let v = analysis.maxRPM {
                 TripStatTile(title: "RPM maks", value: String(format: "%.0f", v), icon: "gauge.with.dots.needle.67percent")
             }
-            if analysis.movingSeconds + analysis.stoppedSeconds > 0 {
-                TripStatTile(title: "Waktu jalan", value: RecordingFormat.duration(analysis.movingSeconds), icon: "figure.outdoor.cycle",
-                             detail: "Berhenti " + RecordingFormat.duration(analysis.stoppedSeconds)
-                                + (analysis.stops.isEmpty ? "" : " • \(analysis.stops.count)× stop"))
+            if group == .journey, analysis.movingSeconds + analysis.stoppedSeconds > 0 {
+                TripStatTile(title: "Waktu jalan", value: RecordingFormat.duration(analysis.movingSeconds), icon: "figure.outdoor.cycle")
+                TripStatTile(title: "Waktu berhenti", value: RecordingFormat.duration(analysis.stoppedSeconds), icon: "pause.circle",
+                             detail: "\(analysis.stops.count)× stop memenuhi ambang")
             }
-            if let a = analysis.coolantStart, let b = analysis.coolantEnd {
+            if group == .vehicle, let a = analysis.coolantStart, let b = analysis.coolantEnd {
                 TripStatTile(title: "Suhu mesin", value: String(format: "%.0f → %.0f °C", a, b), icon: "thermometer.medium",
                              detail: analysis.coolantMax.map { String(format: "Tertinggi %.0f °C", $0) })
             }
-            if let v = analysis.batteryMin {
+            if group == .vehicle, let v = analysis.batteryMin {
                 TripStatTile(title: "Aki (mesin hidup)", value: String(format: "min %.2f V", v), icon: "minus.plus.batteryblock",
                              detail: analysis.batteryAvg.map { String(format: "Rata-rata %.2f V", $0) })
             }
-            if let e = analysis.speedoErrorPercent {
+            if group == .estimates, let e = analysis.speedoErrorPercent {
                 TripStatTile(title: "Selisih speedometer", value: String(format: "%+.1f%%", e), icon: "speedometer",
                              detail: e >= 0 ? "ECU lebih tinggi dari GPS" : "ECU lebih rendah dari GPS")
             }
-            if let ml = analysis.fuelMl {
+            if group == .estimates, let ml = analysis.fuelMl {
                 TripStatTile(title: "Estimasi BBM ⓔ", value: String(format: "≈ %.0f ml", ml), icon: "fuelpump",
                              detail: analysis.fuelKmPerLiter.map { String(format: "≈ %.0f km/L", $0) })
             }
-            if let lo = analysis.altitudeMin, let hi = analysis.altitudeMax {
+            if group == .elevation, let lo = analysis.altitudeMin, let hi = analysis.altitudeMax {
                 TripStatTile(title: "Ketinggian", value: String(format: "%.0f–%.0f m", lo, hi), icon: "mountain.2",
                              detail: analysis.altitudeGain.map { String(format: "Total nanjak %.0f m", $0) })
             }
@@ -553,8 +654,7 @@ struct TripStatTile: View {
             }
         }
         .frame(maxWidth: .infinity, minHeight: 64, alignment: .topLeading)
-        .padding(12)
-        .background(RecordingPalette.card, in: RoundedRectangle(cornerRadius: 14))
+        .padding(.vertical, 8)
     }
 }
 
@@ -709,12 +809,17 @@ private struct TripChartCursor: View {
     }
 }
 
+enum TripChartGroup {
+    case riding, vehicle, elevation
+}
+
 struct TripTimelineCharts: View {
     let analysis: TripAnalysis
     let playback: TripPlayback
+    var group: TripChartGroup = .riding
 
     var body: some View {
-        if !analysis.speedSeries.isEmpty || !analysis.gpsSpeedSeries.isEmpty {
+        if group == .riding, !analysis.speedSeries.isEmpty || !analysis.gpsSpeedSeries.isEmpty {
             TripLineChart(title: "Kecepatan",
                           series: [TripLineSeries(id: "ECU", points: analysis.speedSeries, color: TripPalette.ecu)]
                             + (analysis.gpsSpeedSeries.isEmpty ? [] :
@@ -726,21 +831,21 @@ struct TripTimelineCharts: View {
                 return t
             }
         }
-        if !analysis.rpmSeries.isEmpty {
+        if group == .riding, !analysis.rpmSeries.isEmpty {
             TripLineChart(title: "RPM",
                           series: [TripLineSeries(id: "RPM", points: analysis.rpmSeries, color: TripPalette.rpm)],
                           playback: playback, fromZero: true, area: true) { s in
                 s?.rpm.map { String(format: "%.0f rpm", $0) } ?? "—"
             }
         }
-        if !analysis.throttleSeries.isEmpty {
+        if group == .riding, !analysis.throttleSeries.isEmpty {
             TripLineChart(title: "Bukaan gas",
                           series: [TripLineSeries(id: "Gas", points: analysis.throttleSeries, color: TripPalette.throttle)],
                           playback: playback, fromZero: true, area: true) { s in
                 s?.throttle.map { String(format: "%.1f°", $0) } ?? "—"
             }
         }
-        if !analysis.coolantSeries.isEmpty {
+        if group == .vehicle, !analysis.coolantSeries.isEmpty {
             TripLineChart(title: "Suhu",
                           series: [TripLineSeries(id: "Mesin", points: analysis.coolantSeries, color: TripPalette.coolant)]
                             + (analysis.intakeSeries.isEmpty ? [] :
@@ -752,14 +857,14 @@ struct TripTimelineCharts: View {
                 return "\(c) / \(i) °C"
             }
         }
-        if !analysis.batterySeries.isEmpty {
+        if group == .vehicle, !analysis.batterySeries.isEmpty {
             TripLineChart(title: "Tegangan aki",
                           series: [TripLineSeries(id: "Aki", points: analysis.batterySeries, color: TripPalette.battery)],
                           playback: playback) { s in
                 s?.battery.map { String(format: "%.2f V", $0) } ?? "—"
             }
         }
-        if !analysis.altitudeSeries.isEmpty {
+        if group == .elevation, !analysis.altitudeSeries.isEmpty {
             TripLineChart(title: "Ketinggian (GPS)",
                           series: [TripLineSeries(id: "Alt", points: analysis.altitudeSeries, color: TripPalette.altitude)],
                           playback: playback, area: true) { s in
@@ -978,16 +1083,6 @@ struct TripVehicleInfo: View {
         if let m = analysis.modelCode { row("Kode model", m, mono: true) }
         if let n = analysis.ignOnCount { row("Kontak ON (total)", String(format: "%.0f×", n)) }
         if let h = analysis.ecuPowerOnHours { row("ECU total nyala", String(format: "%.0f jam", h)) }
-        if analysis.maxFiError > 0 || analysis.maxDTC > 0 || analysis.fiLampOn {
-            Label("ECU mencatat error selama rekaman (FI error \(Int(analysis.maxFiError)), DTC \(Int(analysis.maxDTC))\(analysis.fiLampOn ? ", lampu FI menyala" : "")). Cek di layar utama saat terhubung.",
-                  systemImage: "exclamationmark.triangle.fill")
-                .font(.caption)
-                .foregroundStyle(.orange)
-        } else if analysis.hasECU {
-            Label("Tidak ada error FI / DTC selama rekaman.", systemImage: "checkmark.seal.fill")
-                .font(.caption)
-                .foregroundStyle(.green)
-        }
     }
 
     private func row(_ title: String, _ value: String, mono: Bool = false) -> some View {
@@ -1000,6 +1095,27 @@ struct TripVehicleInfo: View {
                 .textSelection(.enabled)
         }
         .font(.subheadline)
+    }
+}
+
+struct TripDiagnosticStatus: View {
+    let analysis: TripAnalysis
+
+    var body: some View {
+        if analysis.maxFiError > 0 || analysis.maxDTC > 0 || analysis.fiLampOn {
+            Label("ECU mencatat error selama rekaman (FI error \(Int(analysis.maxFiError)), DTC \(Int(analysis.maxDTC))\(analysis.fiLampOn ? ", lampu FI menyala" : "")). Cek di layar utama saat terhubung.",
+                  systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        } else if analysis.hasDiagnosticData {
+            Label("Tidak ada error terdeteksi pada data FI / DTC yang tersedia. Bukan jaminan kondisi motor sehat.", systemImage: "checkmark.seal")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            Label("Data FI / DTC tidak tersedia untuk dinilai.", systemImage: "questionmark.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 }
 

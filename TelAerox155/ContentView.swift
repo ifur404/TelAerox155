@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -11,6 +12,9 @@ struct ContentView: View {
     @State private var showPairing = false
     @State private var showRecordSheet = false
     @State private var showAuthCopiedToast = false
+    @State private var displayTime = Date()
+    // Tick tampilan saja: tidak mengirim frame atau mengubah ritme BLE.
+    private let displayClock = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     // Kartu sensor yang di-tap → tampilkan penjelasan (SensorCatalog). key
     // di sini merujuk ke MetricValue.key / MappingItem.key yang sama dipakai
     // buat decode, bukan string bebas.
@@ -38,7 +42,11 @@ struct ContentView: View {
                 }
             }
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            RecordingDock(recorder: store.recorder) { showRecordSheet = true }
+        }
         .preferredColorScheme(.dark)
+        .onReceive(displayClock) { displayTime = $0 }
         .alert("Kesalahan", isPresented: errorBinding) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -75,31 +83,20 @@ struct ContentView: View {
                     Image(systemName: "qrcode").font(.title3)
                 }
                 .accessibilityLabel("Pairing Motor")
+                .frame(width: 44, height: 44)
                 .disabled(store.isActive || store.isConnecting)
-                RecordHeaderButton(recorder: store.recorder) { showRecordSheet = true }
-                connectButton
             }
 
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Circle()
                     .fill(statusColor)
                     .frame(width: 8, height: 8)
                 Text(statusText)
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
                 Spacer()
-                if let model = store.modelCode {
-                    Text(model)
-                        .font(.caption2.weight(.semibold).monospaced())
-                        .foregroundStyle(.secondary)
-                }
-                if let vin = store.vin {
-                    Text("VIN \(vin)")
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
+                connectButton
             }
         }
     }
@@ -146,93 +143,147 @@ struct ContentView: View {
 
     private var metricsView: some View {
         ScrollView {
-            VStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 14) {
                 bigRpmCard
+                if homeTelemetry.missingPrimaryData { liveDataNotice }
 
-                HStack(spacing: 14) {
-                    metricCard(speedMetric, corner: 20)
-                    metricCard(batteryMetric, corner: 20)
-                }
-
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 14),
-                                    GridItem(.flexible(), spacing: 14)], spacing: 14) {
+                LazyVGrid(columns: metricColumns, spacing: 12) {
                     metricCard(coolantMetric)
-                    metricCard(intakeMetric)
+                    metricCard(batteryMetric)
+                    metricCard(odometerMetric)
                     metricCard(throttleMetric)
-                    metricCard(baroMetric)
-                    metricCard(fiMetric)
-                    metricCard(dtcMetric)
-                    metricCard(fiLampMetric)
-                    metricCard(injectionMetric)
                 }
+                diagnosticSummary
 
-                metricCard(odometerMetric)
-
-                extraInfoSection
+                technicalPanel("Sensor & diagnostik") {
+                    LazyVGrid(columns: metricColumns, spacing: 12) {
+                        metricCard(intakeMetric)
+                        metricCard(baroMetric)
+                        metricCard(injectionMetric)
+                        metricCard(fiMetric)
+                        metricCard(dtcMetric)
+                        metricCard(fiLampMetric)
+                        metricCard(fuelMetric)
+                    }
+                }
+                technicalPanel("Info kendaraan") {
+                    vehicleIdentity
+                    extraInfoSection
+                }
+                connectionDetails
             }
+            .padding(.top, 18)
             .padding(.horizontal)
             .padding(.bottom, 24)
         }
         .frame(maxHeight: .infinity)
     }
 
-    private var bigRpmCard: some View {
-        let rpm = store.snapshot.rpm
-        let value = rpm.map { String(format: "%.0f", $0) } ?? "--"
-        return ZStack {
-            RoundedRectangle(cornerRadius: 24)
-                .fill(LinearGradient(colors: [accent.opacity(0.35), accent.opacity(0.12)],
-                                     startPoint: .topLeading, endPoint: .bottomTrailing))
-            HStack {
-                Button { selectedSensorKey = "rpm" } label: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Label("Putaran Mesin", systemImage: "gauge.high")
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.secondary)
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text(value)
-                                .font(.system(size: 64, weight: .heavy, design: .rounded))
-                                .foregroundStyle(.white)
-                                .contentTransition(.numericText())
-                            Text("rpm")
-                                .font(.subheadline.weight(.medium))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .buttonStyle(.plain)
-                Spacer()
-                speedRing
-            }
-            .padding(22)
-        }
-        .frame(height: 150)
-        .animation(.snappy, value: store.snapshot.rpm)
+    private var metricColumns: [GridItem] {
+        [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
     }
 
-    private var speedRing: some View {
-        let speed = store.snapshot.speed ?? 0
-        return Button { selectedSensorKey = "speed" } label: {
-            ZStack {
-                Circle()
-                    .stroke(Color.white.opacity(0.12), lineWidth: 8)
-                Circle()
-                    .trim(from: 0, to: min(speed / 140, 1))
-                    .stroke(accent, style: StrokeStyle(lineWidth: 8, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                VStack(spacing: 0) {
-                    Text(String(format: "%.0f", speed))
-                        .font(.system(size: 24, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
-                    Text("km/h")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(width: 84, height: 84)
+    private var homeTelemetry: HomeTelemetry {
+        HomeTelemetry(snapshot: store.snapshot, isStreaming: store.isActive, now: displayTime)
+    }
+
+    private func liveValue(_ key: String) -> Double? { homeTelemetry.value(key) }
+
+    private func technicalPanel<Content: View>(_ title: String, @ViewBuilder content: @escaping () -> Content) -> some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 12, content: content)
+                .padding(.top, 12)
+        } label: {
+            Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(.white)
         }
-        .buttonStyle(.plain)
-        .animation(.snappy, value: speed)
+        .tint(accent)
+        .padding(16)
+        .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 18))
+    }
+
+    private var liveDataNotice: some View {
+        Label("Menunggu pembaruan kecepatan / RPM", systemImage: "clock.badge.exclamationmark")
+            .font(.caption)
+            .foregroundStyle(homeTelemetry.missingPrimaryData ? Color.orange : Color.secondary)
+    }
+
+    private var diagnosticSummary: some View {
+        let telemetry = homeTelemetry
+        return Label {
+            Text(telemetry.hasDiagnosticWarning
+                 ? "Peringatan motor · cek Sensor & diagnostik"
+                 : (telemetry.hasCompleteDiagnostics
+                    ? "FI / DTC · tidak ada kode error terbaca"
+                    : "FI / DTC · menunggu data"))
+        } icon: {
+            Image(systemName: telemetry.hasDiagnosticWarning ? "exclamationmark.triangle.fill" : "info.circle")
+        }
+        .font(.caption)
+        .foregroundStyle(telemetry.hasDiagnosticWarning ? Color.orange : Color.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var vehicleIdentity: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let model = store.modelCode { Text("Model: \(model)") }
+            if let vin = store.vin { Text("VIN: \(vin)").textSelection(.enabled) }
+            Text("Identitas kendaraan bersifat pribadi. Counter di bawah adalah nilai terakhir yang diterima dalam sesi ini.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .font(.subheadline.monospaced())
+    }
+
+    private var connectionDetails: some View {
+        technicalPanel("Koneksi & pengaturan lanjutan") {
+            Text("Keep-alive").font(.subheadline.weight(.semibold))
+            keepAlivePicker
+            if store.state == .scanning || !store.discovered.isEmpty {
+                discoveryDebugList
+            }
+            if !store.authTrace.isEmpty { authTraceDebugList }
+            Text("Log koneksi dapat memuat identitas perangkat. Periksa sebelum menyalin atau membagikannya.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var bigRpmCard: some View {
+        let rpm = liveValue("rpm")
+        let speed = liveValue("speed")
+        return VStack(spacing: 18) {
+            Button { selectedSensorKey = "speed" } label: {
+                VStack(spacing: 0) {
+                    Text("KECEPATAN").font(.caption.weight(.semibold)).tracking(2)
+                        .foregroundStyle(.secondary)
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(speed.map { String(format: "%.0f", $0) } ?? "--")
+                            .font(.system(size: 80, weight: .bold, design: .rounded).monospacedDigit())
+                            .foregroundStyle(.white)
+                            .lineLimit(1).minimumScaleFactor(0.6)
+                        Text("km/h").font(.headline).foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.plain)
+            Button { selectedSensorKey = "rpm" } label: {
+                VStack(spacing: 8) {
+                    HStack {
+                        Text("PUTARAN MESIN").font(.caption.weight(.semibold)).tracking(1)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(rpm.map { String(format: "%.0f rpm", $0) } ?? "-- rpm")
+                            .font(.title3.weight(.semibold).monospacedDigit()).foregroundStyle(.white)
+                    }
+                    ProgressView(value: min(max(rpm ?? 0, 0), 12000), total: 12000)
+                        .tint(accent)
+                        .accessibilityLabel("Putaran mesin")
+                }
+                .padding(.vertical, 4)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(20)
+        .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 24))
     }
 
     /// Kalau `m.key` ada di `SensorCatalog`, kartu bisa di-tap untuk lihat
@@ -249,7 +300,7 @@ struct ContentView: View {
                 Text(m.title)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
                 if m.key != nil, SensorCatalog.info(for: m.key!) != nil {
                     Image(systemName: "info.circle")
@@ -262,6 +313,8 @@ struct ContentView: View {
                     .font(.system(size: 26, weight: .bold, design: .rounded))
                     .foregroundStyle(m.color)
                     .contentTransition(.numericText())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.65)
                 if !m.unit.isEmpty {
                     Text(m.unit)
                         .font(.caption2)
@@ -284,12 +337,8 @@ struct ContentView: View {
         }
     }
 
-    private var speedMetric: MetricValue {
-        metric("speed", icon: "speedometer", title: "Kecepatan", decimals: 0)
-    }
-
     private var batteryMetric: MetricValue {
-        guard let v = store.snapshot.battery else {
+        guard let v = liveValue("battery") else {
             return metric("battery", icon: "battery.75", title: "Tegangan Aki", decimals: 1)
         }
         let color: Color = v < 11 ? .red : (v < 12 ? .orange : .green)
@@ -316,16 +365,15 @@ struct ContentView: View {
     }
 
     private var fiMetric: MetricValue {
-        guard let n = store.snapshot.value("fiError"), n > 0 else {
-            return metric("fiError", icon: "checkmark.circle", title: "Error FI",
-                          decimals: 0, color: .green)
+        guard let n = liveValue("fiError") else {
+            return metric("fiError", icon: "questionmark.circle", title: "Error FI", decimals: 0)
         }
-        return metric("fiError", icon: "exclamationmark.triangle", title: "Error FI",
-                      decimals: 0, color: .red)
+        return metric("fiError", icon: n > 0 ? "exclamationmark.triangle" : "checkmark.circle", title: "Error FI",
+                      decimals: 0, color: n > 0 ? .red : .green)
     }
 
     private var dtcMetric: MetricValue {
-        guard let d = store.snapshot.decoded("dtc"), d.value != 0 else {
+        guard let value = liveValue("dtc"), value != 0 else {
             return metric("dtc", icon: "wrench.and.screwdriver", title: "Kode DTC",
                           decimals: 0, color: .green)
         }
@@ -338,7 +386,7 @@ struct ContentView: View {
     }
 
     private var fiLampMetric: MetricValue {
-        guard let n = store.snapshot.value("fiWarningLamp") else {
+        guard let n = liveValue("fiWarningLamp") else {
             return metric("fiWarningLamp", icon: "lightbulb", title: "Lampu FI", decimals: 0)
         }
         let color: Color = n > 0 ? .red : .green
@@ -357,26 +405,19 @@ struct ContentView: View {
     /// Lihat docs/research/02-mapping-reanalysis.md §3.
     private var extraInfoSection: some View {
         VStack(spacing: 8) {
-            HStack {
-                Text("Info Tambahan")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white)
-                Spacer()
-            }
             HStack(spacing: 14) {
                 metricCard(ecuPowerOnMetric, corner: 18)
                 metricCard(ignOnCountMetric, corner: 18)
             }
-            metricCard(fuelMetric, corner: 18)
         }
     }
 
     private var ecuPowerOnMetric: MetricValue {
-        guard let d = store.snapshot.decoded("ecuPowerOnTime") else {
+        guard let value = liveValue("ecuPowerOnTime") else {
             return MetricValue(key: "ecuPowerOnTime", icon: "power", title: "ECU Total Nyala",
                                valueText: "--", unit: "", color: .secondary)
         }
-        let hari = d.value / 86_400
+        let hari = value / 86_400
         return MetricValue(key: "ecuPowerOnTime", icon: "power", title: "ECU Total Nyala",
                            valueText: String(format: "%.1f", hari), unit: "hari", color: .white)
     }
@@ -396,12 +437,12 @@ struct ContentView: View {
 
     private func metric(_ key: String, icon: String, title: String,
                         decimals: Int, color: Color = .white) -> MetricValue {
-        guard let d = store.snapshot.decoded(key) else {
+        guard let value = liveValue(key), let d = store.snapshot.decoded(key) else {
             return MetricValue(key: key, icon: icon, title: title, valueText: "--",
                                unit: "", color: .secondary)
         }
         return MetricValue(key: key, icon: icon, title: title,
-                           valueText: String(format: "%.\(decimals)f", d.value),
+                           valueText: String(format: "%.\(decimals)f", value),
                            unit: d.unit, color: color)
     }
 
@@ -451,7 +492,6 @@ struct ContentView: View {
         }
         .padding(10)
         .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 12))
-        .padding(.horizontal, 32)
     }
 
     /// Trace tahap auth (0xAA bonded → balas 0x5A StartProcessing / bonding
@@ -501,7 +541,6 @@ struct ContentView: View {
         }
         .padding(10)
         .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 12))
-        .padding(.horizontal, 32)
     }
 
     /// Keep-alive 0xA6: app resmi Yamaha mengirim frame ini tiap 1 detik selama
@@ -520,14 +559,13 @@ struct ContentView: View {
                 Text("Penuh").tag(KeepAlivePolicy.full)
             }
             .pickerStyle(.segmented)
-            .disabled(store.isActive || store.state == .connecting || store.state == .authenticating)
+            .disabled(store.isActive || store.isConnecting)
 
             Text(keepAlivePolicyHint(policy.wrappedValue))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
-        .padding(.horizontal, 32)
     }
 
     private func keepAlivePolicyHint(_ policy: KeepAlivePolicy) -> String {
@@ -543,33 +581,31 @@ struct ContentView: View {
     /// mendorong header ("TelAerox" + status bar) keluar layar sepenuhnya.
     private var idleView: some View {
         ScrollView {
-            VStack(spacing: 14) {
-                Image(systemName: "bicycle")
-                    .font(.system(size: 56))
-                    .foregroundStyle(accent.opacity(0.7))
-                Text("Belum terhubung")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.white)
-                Text("Nyalakan mesin / kontak Aerox, lalu tekan Hubungkan.\nAplikasi menampilkan telemetri langsung dari CCU via Bluetooth.")
-                    .font(.subheadline)
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 32)
-
-                keepAlivePicker
-
-                if store.state == .scanning {
-                    discoveryDebugList
+            VStack(spacing: 18) {
+                VStack(spacing: 14) {
+                    Image(systemName: store.isConnecting ? "antenna.radiowaves.left.and.right" : "motorcycle")
+                        .font(.system(size: 48))
+                        .foregroundStyle(accent)
+                    if store.isConnecting { ProgressView().tint(accent) }
+                    Text(store.isConnecting ? statusText : (store.hasPairing ? "Siap terhubung" : "Pasangkan motor dulu"))
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.white)
+                    Text(store.isConnecting
+                         ? "Dekatkan iPhone ke motor."
+                         : (store.hasPairing
+                            ? "Nyalakan kontak motor, lalu tekan Hubungkan."
+                            : "Pindai QR motor untuk mulai terhubung."))
+                        .font(.subheadline)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.secondary)
                 }
-                // Auth trace: muncul pas idle (connecting → authenticating → failed/
-                // terputus). Jadi kalau pas di motor "berhasil connect tapi timeout
-                // beberapa detik kemudian", di sini kelihatan auth-nya nyangkut di
-                // langkah mana (kirim 0xAA bonded=? → terima/tidak 0x5A → fallback
-                // bonding → watchdog timeout) — bukan tebak-tebakan lagi.
-                if !store.authTrace.isEmpty {
-                    authTraceDebugList
-                }
+                .frame(maxWidth: .infinity)
+                .padding(24)
+                .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 24))
+
+                connectionDetails
             }
+            .padding(.horizontal)
             .frame(maxWidth: .infinity)
             .padding(.top, 24)
             .padding(.bottom, 40)
@@ -585,7 +621,7 @@ struct ContentView: View {
 
     private var statusText: String {
         switch store.state {
-        case .poweredOff: return "Bluetooth mati"
+        case .poweredOff: return "Belum terhubung"
         case .scanning: return "Mencari CCU…"
         case .connecting: return "Menghubungkan…"
         case .authenticating: return "Otentikasi…"
