@@ -21,7 +21,8 @@ struct RecordingView: View {
     @Environment(\.dismiss) private var dismiss
 
     @AppStorage("recordFormat") private var formatRaw: String = SessionRecorder.Format.csv.rawValue
-    @AppStorage("recordPhoneSensors") private var includePhone = true
+    // Pertahankan key lama agar pilihan sensor tambahan pengguna tidak direset.
+    @AppStorage("recordPhoneSensors") private var includeMotionAndBarometer = true
     @AppStorage("phonePlacement") private var placementRaw: String = PhonePlacement.unknown.rawValue
     @State private var confirmStop = false
     @State private var pendingDelete: RecordingSession?
@@ -134,10 +135,13 @@ struct RecordingView: View {
             connectionHint
 
             if selectedFormat == .csv {
-                Toggle("Sertakan sensor iPhone", isOn: $includePhone).tint(accent)
-            }
-            if selectedFormat == .csv && includePhone {
                 GPSStatusRow(location: location, accent: accent, requestingOnStart: true)
+                Toggle("Gerakan & barometer", isOn: $includeMotionAndBarometer).tint(accent)
+                Text("Akselerometer, giroskop, orientasi, dan tekanan udara. GPS tetap direkam saat opsi ini mati, sesuai izin lokasi.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if selectedFormat == .csv && includeMotionAndBarometer {
                 Picker("Posisi iPhone", selection: $placementRaw) {
                     ForEach(PhonePlacement.allCases) { placement in
                         Text(placement.title).tag(placement.rawValue)
@@ -147,7 +151,7 @@ struct RecordingView: View {
             }
 
             Button {
-                if recorder.start(format: selectedFormat, includesPhoneSensors: includePhone, placement: PhonePlacement(rawValue: placementRaw) ?? .unknown) == nil { startFailed = true }
+                if recorder.start(format: selectedFormat, includesMotionAndBarometer: includeMotionAndBarometer, placement: PhonePlacement(rawValue: placementRaw) ?? .unknown) == nil { startFailed = true }
             } label: {
                 Label("Mulai Rekam", systemImage: "record.circle.fill")
                     .font(.headline)
@@ -158,7 +162,7 @@ struct RecordingView: View {
             }
             .buttonStyle(.plain)
 
-            Text(selectedFormat == .csv && includePhone
+            Text(selectedFormat == .csv
                  ? "Mulai sebelum mengunci layar. GPS dan motor direkam sesuai izin dan koneksi."
                  : "Saat layar terkunci, rekaman mengikuti data Bluetooth dari motor.")
                 .font(.caption)
@@ -177,8 +181,8 @@ struct RecordingView: View {
                 .foregroundStyle(store.isActive ? .green : .orange)
             Text(store.isActive
                  ? "Motor terhubung"
-                 : (selectedFormat == .csv && includePhone
-                    ? "Motor belum terhubung · sensor iPhone tetap bisa direkam"
+                 : (selectedFormat == .csv
+                    ? "Motor belum terhubung · GPS tetap bisa direkam"
                     : "Hubungkan motor untuk menerima data"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -323,15 +327,15 @@ private struct RecordingLiveCard: View {
             }
 
             if !store.isActive {
-                Text(recorder.format == .csv && recorder.includesPhoneSensors
-                     ? "Motor tidak terhubung — sensor iPhone tetap direkam; kolom motor kosong sampai tersambung lagi."
+                Text(recorder.format == .csv
+                     ? "Motor tidak terhubung — GPS tetap direkam sesuai izin; kolom motor kosong sampai tersambung lagi."
                      : "Motor tidak terhubung — belum ada frame masuk.")
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if recorder.format == .csv && recorder.includesPhoneSensors {
+            if recorder.format == .csv {
                 GPSStatusRow(location: location, accent: accent, requestingOnStart: false)
             }
 

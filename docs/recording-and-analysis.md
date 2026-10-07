@@ -1,6 +1,8 @@
 # Perekaman dan analisis perjalanan
 
-Pilih **Data Sensor**, tentukan **Posisi iPhone**, lalu mulai rekaman. iOS meminta izin ketika
+Pilih **Perjalanan** untuk merekam telemetri motor dan GPS. Toggle **Gerakan & barometer** hanya
+mengatur akselerometer, giroskop, orientasi, dan barometer; GPS tetap direkam ketika toggle mati,
+sesuai izin lokasi. Jika toggle aktif, tentukan **Posisi iPhone**. iOS meminta izin ketika
 lokasi atau gerakan mulai digunakan. Sensor yang tidak tersedia atau izinnya ditolak tidak
 menghentikan perekaman sumber lain.
 
@@ -29,14 +31,15 @@ barometer setelah 5 detik. `motion_uptime_s` dan `barometer_uptime_s` menyimpan 
 sensor sejak boot. Timestamp gerakan/barometer dikonversi ke jam kalender; timestamp GPS berasal
 dari Core Location.
 
-Sensor iPhone tetap direkam ketika BLE terputus, sementara kolom motor menjadi kosong. CSV lama
+GPS dan sensor tambahan yang diaktifkan tetap direkam ketika BLE terputus, sementara kolom motor menjadi kosong. CSV lama
 tetap dapat dibuka. Data yang tidak ada pada rekaman lama tidak ditampilkan sebagai pembacaan baru.
 
 ## Rekaman saat layar terkunci
 
-Mulai rekaman ketika aplikasi masih terbuka. Untuk CSV dengan sensor iPhone, GPS dimulai secara
+Mulai rekaman ketika aplikasi masih terbuka. Untuk setiap rekaman CSV, GPS dimulai secara
 sinkron setelah file dan header siap; tidak menunggu tick timer atau antrean UI berikutnya.
-Jika sensor iPhone dimatikan, GPS tidak dinyalakan dan kolom sensor iPhone tidak disimpan.
+Jika **Gerakan & barometer** dimatikan, sensor tersebut tidak dinyalakan dan kolomnya tidak disimpan.
+Kolom GPS dan status perangkat tetap ada. BLE mentah tetap hanya merekam frame Bluetooth.
 
 Keep-alive memakai satu jadwal monotonic yang dilayani oleh timer, callback BLE masuk, dan callback
 kesiapan buffer tulis. Kebijakan yang dipilih tetap berlaku: `off` tidak menulis, `notifyOnly` hanya
@@ -49,7 +52,7 @@ ditangani CoreBluetooth. Ketika aplikasi kembali ke foreground, watchdog mendapa
 Buffer file dan indeks di-flush saat aplikasi masuk background tanpa menghentikan sesi.
 
 Validasi perangkat fisik tetap diperlukan: rekam minimal 5 menit dengan layar terkunci untuk CSV
-dengan/tanpa sensor iPhone dan BLE mentah, lalu periksa timestamp serta jeda data. Ulangi dengan
+dengan/tanpa gerakan dan barometer serta BLE mentah, lalu periksa timestamp serta jeda data. Ulangi dengan
 izin lokasi ditolak dan motor terputus/tersambung ulang. Simulator tidak menguji koneksi CCU atau
 kebijakan suspend iPhone. Force-quit atau terminasi proses tidak didukung sebagai rekaman kontinu.
 

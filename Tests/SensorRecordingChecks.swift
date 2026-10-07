@@ -47,14 +47,25 @@ struct SensorRecordingChecks {
 
     static func main() {
         checkBackgroundRecording()
-        let motorColumns = SessionRecorder.columns(includingPhone: false)
-        let motorCSV = CSVCodec.row(motorColumns) + "\n" + [row(0, speed: 20), row(1, speed: 25)].map { r in
-            CSVCodec.row(motorColumns.map { r[$0] ?? "" })
+        let tripColumns = SessionRecorder.columns(includingMotionAndBarometer: false)
+        expect(tripColumns.filter { $0.hasPrefix("gps_") } == SessionRecorder.csvColumns.filter { $0.hasPrefix("gps_") },
+               "Semua kolom GPS tetap tersedia saat gerakan/barometer mati")
+        expect(!tripColumns.contains("motion_status") && !tripColumns.contains("gyro_x_radps")
+               && !tripColumns.contains("attitude_qw") && !tripColumns.contains("phone_pressure_kpa")
+               && !tripColumns.contains("barometer_status") && !tripColumns.contains("phone_placement"),
+               "Kolom gerakan, orientasi, barometer, dan pemasangan mengikuti toggle")
+        expect(tripColumns.contains("phone_battery_pct"), "Status perangkat tidak bergantung pada sensor gerakan")
+        expect(SessionRecorder.columns(includingMotionAndBarometer: true) == SessionRecorder.csvColumns,
+               "Toggle aktif mempertahankan semua kolom sensor")
+        let tripCSV = CSVCodec.row(tripColumns) + "\n" + [row(0, speed: 20, lat: -6.2), row(1, speed: 25, lat: -6.1999)].map { r in
+            CSVCodec.row(tripColumns.map { r[$0] ?? "" })
         }.joined(separator: "\n")
-        let motorOnly = TripAnalysis.parse(motorCSV)!
-        expect(!motorOnly.hasPhoneColumns && !motorOnly.availableColumns.contains("gps_lat"), "Motor saja tidak memiliki kolom sensor iPhone")
-        expect(motorOnly.maxSpeed == 25, "Telemetri tetap terbaca tanpa kolom iPhone")
-        expect(!motorOnly.gaps.contains { $0.kind == .gps || $0.kind == .motion }, "Sensor yang tidak direkam bukan jeda data")
+        let basicTrip = TripAnalysis.parse(tripCSV)!
+        expect(!basicTrip.hasPhoneColumns && basicTrip.hasRoute, "Rute GPS tetap tersedia tanpa gerakan/barometer")
+        expect(basicTrip.maxSpeed == 25, "Telemetri tetap terbaca tanpa gerakan/barometer")
+        expect(!basicTrip.gaps.contains { $0.kind == .gps || $0.kind == .motion }, "GPS terisi dan sensor nonaktif tidak dianggap jeda")
+        let motorOnly = TripAnalysis.parse("elapsed_s,rpm,speed_kmh\n0,3000,20\n1,3000,25")!
+        expect(!motorOnly.hasRoute && motorOnly.maxSpeed == 25, "CSV motor saja dari versi lama tetap terbaca")
 
         var accumulator = MotionAccumulator()
         for i in 0..<50 { accumulator.append(reading(Double(i) / 50, z: i == 25 ? 10 : 0)) }
@@ -237,34 +248,44 @@ struct SensorRecordingChecks {
         try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let recorder = SessionRecorder(library: RecordingLibrary(directory: directory))
+        let gpsFix = CLLocation(coordinate: CLLocationCoordinate2D(latitude: -6.2, longitude: 106.8),
+                                altitude: 20, horizontalAccuracy: 3, verticalAccuracy: 4,
+                                timestamp: Date())
         var events: [Bool] = []
         recorder.onRecordingChanged = { [weak recorder] active in
             guard let recorder else { preconditionFailure("Recorder hilang saat callback") }
             events.append(active)
             expect(recorder.isRecording == active, "Callback melihat state yang sudah diterapkan")
             if active {
-                expect(!recorder.includesPhoneSensors, "Opsi sensor sudah siap sebelum callback start")
+                expect(!recorder.includesMotionAndBarometer, "Opsi sensor sudah siap sebelum callback start")
                 expect(recorder.library.sessions.first?.endedAt == nil, "Indeks sesi siap sebelum callback")
                 if recorder.format == .csv {
                     let text = try! String(contentsOf: recorder.fileURL!, encoding: .utf8)
-                    expect(text.hasPrefix("timestamp_iso,") && !text.contains("gps_lat"),
+                    expect(text.hasPrefix("timestamp_iso,") && text.contains("gps_lat") && !text.contains("motion_status"),
                            "Header lengkap sebelum GPS dan sampling pertama dimulai")
                     recorder.appendCSVRow(snapshot: TelemetrySnapshot(), vin: nil, modelCode: nil,
-                        location: nil, bleState: "connecting", phone: PhoneSensorSample(),
-                        gpsAuthorization: "denied", gpsPrecise: false, appState: "background", at: Date())
+                        location: gpsFix, bleState: "connecting", phone: PhoneSensorSample(),
+                        gpsAuthorization: "whenInUse", gpsPrecise: true, appState: "background", at: Date())
                 }
             } else {
                 expect(recorder.library.sessions.first?.endedAt != nil, "Indeks selesai sebelum callback stop")
             }
         }
-        let csvURL = recorder.start(format: .csv, includesPhoneSensors: false)!
+        let csvURL = recorder.start(format: .csv, includesMotionAndBarometer: false)!
         expect(events == [true] && recorder.lineCount == 1, "Start dan sampling pertama sinkron")
         recorder.checkpoint()
         expect(recorder.isRecording && events == [true], "Checkpoint background tidak menghentikan sesi")
         expect(try! String(contentsOf: csvURL, encoding: .utf8).split(separator: "\n").count == 2,
                "Header dan baris callback tersimpan")
         expect(recorder.library.sessions.first?.lineCount == 1, "Checkpoint memperbarui indeks")
-        _ = recorder.start(format: .bleRaw, includesPhoneSensors: false)
+        let savedRows = try! String(contentsOf: csvURL, encoding: .utf8).split(separator: "\n").map { CSVCodec.fields(String($0)) }
+        expect(savedRows[0].count == savedRows[1].count, "Header dan baris GPS tanpa sensor tambahan cocok")
+        let saved = Dictionary(uniqueKeysWithValues: zip(savedRows[0], savedRows[1]))
+        expect(saved["gps_lat"] == "-6.2000000" && saved["gps_lon"] == "106.8000000" && saved["gps_status"] == "active",
+               "GPS benar-benar ditulis meski toggle mati dan motor terputus")
+        expect(saved["motion_status"] == nil && saved["phone_pressure_kpa"] == nil,
+               "File tanpa sensor tambahan tidak memuat gerakan atau tekanan")
+        _ = recorder.start(format: .bleRaw, includesMotionAndBarometer: false)
         expect(events == [true, false, true], "Ganti format menghentikan sumber lama sebelum mulai baru")
         recorder.appendRaw(.info, "Uji data buatan")
         recorder.stop()

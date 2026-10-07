@@ -346,9 +346,11 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
             self.lastCSVSampleAt = nil
             if isRecording {
                 self.startRecordingTimer()
-                if self.recorder.format == .csv && self.recorder.includesPhoneSensors {
+                if self.recorder.format == .csv {
                     self.location.start()
-                    self.phoneSensors.start()
+                    if self.recorder.includesMotionAndBarometer {
+                        self.phoneSensors.start()
+                    }
                 }
                 self.sampleCSVIfDue()
             } else {
@@ -377,7 +379,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
             .sink { [weak self] _ in
                 guard let self else { return }
                 let recordingCSV = self.recorder.isRecording && self.recorder.format == .csv
-                if recordingCSV && self.recorder.includesPhoneSensors && !self.location.isActive {
+                if recordingCSV && !self.location.isActive {
                     self.location.start()
                 }
             }
