@@ -3,6 +3,13 @@
 Aplikasi iOS berbasis SwiftUI untuk membaca telemetri Yamaha Aerox melalui Bluetooth LE. Proyek ini
 tidak berafiliasi dengan Yamaha.
 
+## Video demo
+
+<video controls playsinline preload="metadata" width="360">
+  <source src="videos/telaerox-intro/telaerox155-analisis-motor-maps-30s.mp4" type="video/mp4">
+  Browser ini tidak mendukung pemutar video; [buka file MP4](videos/telaerox-intro/telaerox155-analisis-motor-maps-30s.mp4).
+</video>
+
 Aplikasi ini bersifat **read-only untuk fungsi kendaraan**. Komunikasi tulis dibatasi pada
 autentikasi BLE dan keep-alive periodik yang ditetapkan oleh `KeepAlivePolicy`. Tidak ada permintaan
 diagnostik atau perintah kontrol kendaraan.

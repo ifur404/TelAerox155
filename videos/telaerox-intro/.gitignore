@@ -1,6 +1,7 @@
 /target
 out.mp4
 *.mp4
+!telaerox155-analisis-motor-maps-30s.mp4
 !media/*.mp4
 frames/
 strip.png

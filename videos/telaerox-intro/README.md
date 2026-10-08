@@ -65,7 +65,7 @@ ffmpeg -y -i audio-work/story-raw.wav -af loudnorm=I=-14:TP=-1.5:LRA=7 -ar 48000
 
 ## Pengenalan dengan fokus analisis motor — 30 detik
 
-Output terbaru dengan peta: `telaerox155-analisis-motor-maps-30s.mp4`.
+Video hasil render: [telaerox155-analisis-motor-maps-30s.mp4](telaerox155-analisis-motor-maps-30s.mp4) (30 detik, 1080×1920, 30 fps).
 Versi sebelum peta tetap tersedia sebagai `telaerox155-analisis-motor-30s.mp4`.
 Sumber: `src/motor.rs`; capture: `motor-assets/`; petunjuk reproduksi: `capture/README.md`.
 
