@@ -15,3 +15,8 @@ xcuserdata/
 DerivedData/
 build/
 .DS_Store
+
+# Artefak build: paket IPA, dSYM, hasil arsip
+*.ipa
+*.dSYM/
+*.xcarchive/

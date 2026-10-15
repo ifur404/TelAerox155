@@ -15,6 +15,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
+				secrets.local.json,
 			);
 			target = 000000000000000100000000 /* TelAerox155 */;
 		};

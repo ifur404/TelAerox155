@@ -36,6 +36,22 @@ Project menargetkan iOS 27 atau lebih baru. Bluetooth memerlukan iPhone dan CCU 
 koneksi. Simulator hanya dapat digunakan untuk bagian aplikasi yang tidak bergantung pada radio atau
 sensor perangkat.
 
+## Build dan kemas IPA dari terminal
+
+Untuk membangun aplikasi iPhone (Release, `iphoneos`) dan mengemasnya menjadi IPA tanpa membuka
+Xcode:
+
+```sh
+bash scripts/build-ipa.sh
+```
+
+Script akan menghasilkan `build/TelAerox155.ipa`. IPA ini **unsigned** (`CODE_SIGNING_ALLOWED=NO`),
+jadi perlu ditandatangani ulang sebelum dipasang ke perangkat, misalnya lewat Sideloadly, AltStore,
+atau re-sign dengan sertifikat sendiri. Direktori `build/` beserta hasil IPA diabaikan Git.
+
+Script juga menghentikan pengemasan bila `secrets.local.json` ikut ter-bundle, sebagai pengaman
+terhadap kebocoran kredensial (lihat [kontrak keamanan](AGENTS.md)).
+
 ## Struktur aplikasi
 
 `YConnectKit/` menangani protokol BLE secara terpisah dari SwiftUI. `TelemetryStore` menghubungkan
