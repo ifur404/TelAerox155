@@ -234,15 +234,18 @@ struct RideNavigationView: View {
                 }
                 .accessibilityLabel("Batalkan tujuan")
             }
-            Button {
-                nav.start()
-            } label: {
-                Label("Mulai", systemImage: "location.fill")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity, minHeight: 50)
+            HStack(spacing: 10) {
+                voiceToggle
+                Button {
+                    nav.start()
+                } label: {
+                    Label("Mulai", systemImage: "location.fill")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity, minHeight: 50)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(accent)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(accent)
             Text("Waktu tempuh dari Apple Maps untuk mobil; motor bisa lebih cepat.")
                 .font(.caption2).foregroundStyle(.secondary)
         }
@@ -284,12 +287,7 @@ struct RideNavigationView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button { nav.voiceEnabled.toggle() } label: {
-                    Image(systemName: nav.voiceEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
-                        .font(.title3).frame(width: 48, height: 44)
-                }
-                .foregroundStyle(.white)
-                .accessibilityLabel(nav.voiceEnabled ? "Matikan suara" : "Nyalakan suara")
+                voiceToggle
                 Button(role: .destructive) { nav.stop() } label: {
                     Text("Selesai").font(.headline).padding(.horizontal, 14).frame(height: 44)
                 }
@@ -299,6 +297,29 @@ struct RideNavigationView: View {
         }
         .padding(14)
         .background(panelBackground)
+    }
+
+    /// Tombol suara on/off — besar dan berlabel supaya gampang ditekan pakai
+    /// sarung tangan. Pilihan disimpan dan dipakai lagi di navigasi berikutnya.
+    private var voiceToggle: some View {
+        Button {
+            nav.voiceEnabled.toggle()
+        } label: {
+            VStack(spacing: 2) {
+                Image(systemName: nav.voiceEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                    .font(.title3)
+                Text(nav.voiceEnabled ? "Suara on" : "Suara off")
+                    .font(.caption2.weight(.semibold))
+            }
+            .frame(width: 64, height: 50)
+            .background(RoundedRectangle(cornerRadius: 12)
+                .fill(nav.voiceEnabled ? accent.opacity(0.25) : Color.white.opacity(0.08)))
+        }
+        .foregroundStyle(nav.voiceEnabled ? .white : .secondary)
+        .sensoryFeedback(.selection, trigger: nav.voiceEnabled)
+        .accessibilityLabel("Suara navigasi")
+        .accessibilityValue(nav.voiceEnabled ? "Nyala" : "Mati")
+        .accessibilityHint("Ketuk dua kali untuk \(nav.voiceEnabled ? "mematikan" : "menyalakan") suara petunjuk arah")
     }
 
     private var arrivedCard: some View {

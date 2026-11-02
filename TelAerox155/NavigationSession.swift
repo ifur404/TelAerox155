@@ -55,7 +55,14 @@ final class NavigationSession: NSObject, ObservableObject, CLLocationManagerDele
     @Published var voiceEnabled: Bool {
         didSet {
             UserDefaults.standard.set(voiceEnabled, forKey: "navVoiceEnabled")
-            if !voiceEnabled { speech.stopSpeaking(at: .immediate) }
+            guard voiceEnabled != oldValue else { return }
+            if !voiceEnabled {
+                speech.stopSpeaking(at: .immediate)
+            } else if phase == .navigating, !nextInstruction.isEmpty {
+                // Baru dinyalakan di tengah jalan: langsung ucapkan instruksi
+                // berikutnya supaya pengendara tidak menunggu ambang jarak.
+                say("\(DistanceText.spoken(distanceToManeuver)) lagi, \(nextInstruction)")
+            }
         }
     }
 
