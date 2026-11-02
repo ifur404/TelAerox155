@@ -75,7 +75,6 @@ struct RideNavigationView: View {
                             pointsOfInterest: .including([.gasStation, .evCharger, .parking])))
         .mapControls {
             MapCompass()
-            MapPitchToggle()
             MapScaleView()
         }
     }
@@ -155,6 +154,8 @@ struct RideNavigationView: View {
                 .padding(.horizontal, 12)
                 .frame(height: 44)
                 .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.08)))
+
+                optionsMenu(compact: true)
             }
 
             if !nav.suggestions.isEmpty {
@@ -234,8 +235,7 @@ struct RideNavigationView: View {
         VStack(spacing: 10) {
             HStack(spacing: 8) {
                 Spacer()
-                if nav.phase == .navigating { googleMapsButton(compact: true) }
-                if nav.phase == .navigating { mapModeButton }
+                if nav.phase == .navigating { optionsMenu(compact: false) }
                 if nav.phase == .navigating && !following {
                     Button(action: followRider) {
                         Label("Ikuti", systemImage: "location.north.line.fill")
@@ -362,19 +362,39 @@ struct RideNavigationView: View {
         .background(panelBackground)
     }
 
-    /// Ganti peta 3D/2D. Saat Mode Daya Rendah selalu 2D.
-    private var mapModeButton: some View {
-        Button { map3D.toggle() } label: {
-            Text(show3D ? "3D" : "2D")
-                .font(.subheadline.weight(.bold))
-                .frame(width: 52, height: 44)
-                .background(Capsule().fill(.black.opacity(0.7)))
+    /// Menu "Opsi": pengaturan tampilan dikumpulkan di satu tombol supaya
+    /// layar navigasi tidak penuh tombol. Semua pilihan disimpan antar sesi.
+    private func optionsMenu(compact: Bool) -> some View {
+        Menu {
+            Section("Tampilan peta") {
+                Toggle(isOn: $map3D) {
+                    Label("Peta 3D", systemImage: "view.3d")
+                }
+                .disabled(lowPower)
+                if lowPower {
+                    Text("Mode Daya Rendah aktif: peta 2D")
+                }
+            }
+            Section("Suara") {
+                Toggle(isOn: $nav.voiceEnabled) {
+                    Label("Suara petunjuk", systemImage: "speaker.wave.2.fill")
+                }
+            }
+            if nav.phase == .navigating, let url = googleMapsURL {
+                Section {
+                    Button { openURL(url) } label: {
+                        Label("Buka di Google Maps", systemImage: "arrow.up.forward.app")
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "slider.horizontal.3")
+                .font(.headline)
+                .frame(width: compact ? 44 : 52, height: 44)
+                .background(Capsule().fill(compact ? Color.clear : Color.black.opacity(0.7)))
         }
-        .foregroundStyle(lowPower ? .secondary : .white)
-        .disabled(lowPower)
-        .accessibilityLabel("Mode peta")
-        .accessibilityValue(show3D ? "3D" : "2D")
-        .accessibilityHint(lowPower ? "Mode Daya Rendah aktif, peta 2D" : "Ketuk dua kali untuk ganti mode peta")
+        .foregroundStyle(.white)
+        .accessibilityLabel("Opsi navigasi")
     }
 
     /// Prakiraan hujan dari Open-Meteo. Atribusi "Open-Meteo.com" wajib
