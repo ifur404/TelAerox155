@@ -65,6 +65,19 @@ nonisolated struct RouteGeometry {
         return best
     }
 
+    /// Koordinat di jarak tertentu sepanjang rute (dibatasi 0...total).
+    func coordinate(at distance: Double) -> CLLocationCoordinate2D? {
+        guard let first = points.first else { return nil }
+        guard points.count >= 2 else { return first }
+        let d = min(max(distance, 0), totalDistance)
+        guard let i = cumulative.indices.dropFirst().first(where: { cumulative[$0] >= d }) else { return points.last }
+        let segLen = cumulative[i] - cumulative[i - 1]
+        let t = segLen > 0 ? (d - cumulative[i - 1]) / segLen : 0
+        let a = points[i - 1], b = points[i]
+        return CLLocationCoordinate2D(latitude: a.latitude + (b.latitude - a.latitude) * t,
+                                      longitude: a.longitude + (b.longitude - a.longitude) * t)
+    }
+
     /// Indeks step yang sedang dijalani untuk progres tertentu.
     func stepIndex(at progress: Double) -> Int {
         stepEnds.firstIndex { progress < $0 - 0.5 } ?? max(stepEnds.count - 1, 0)
@@ -132,18 +145,52 @@ nonisolated enum ManeuverKind: Equatable {
 nonisolated enum DistanceText {
     static func format(_ meters: Double) -> String {
         if meters < 1000 {
-            let rounded = meters < 100 ? (meters / 10).rounded() * 10 : (meters / 50).rounded() * 50
-            return "\(Int(max(rounded, 0))) m"
+            return "\(rounded(meters)) m"
         }
         return String(format: "%.1f km", meters / 1000).replacingOccurrences(of: ".", with: ",")
     }
 
-    /// Versi untuk diucapkan (tanpa singkatan).
-    static func spoken(_ meters: Double) -> String {
+    /// Versi untuk diucapkan (tanpa singkatan), mengikuti bahasa suara.
+    static func spoken(_ meters: Double, indonesian: Bool = true) -> String {
         if meters < 1000 {
-            let rounded = meters < 100 ? (meters / 10).rounded() * 10 : (meters / 50).rounded() * 50
-            return "\(Int(max(rounded, 0))) meter"
+            return indonesian ? "\(rounded(meters)) meter" : "\(rounded(meters)) meters"
         }
-        return String(format: "%.1f kilometer", meters / 1000).replacingOccurrences(of: ".", with: " koma ")
+        let km = String(format: "%.1f", meters / 1000)
+        return indonesian ? "\(km.replacingOccurrences(of: ".", with: " koma ")) kilometer" : "\(km) kilometers"
     }
+
+    private static func rounded(_ meters: Double) -> Int {
+        let r = meters < 100 ? (meters / 10).rounded() * 10 : (meters / 50).rounded() * 50
+        return Int(max(r, 0))
+    }
+}
+
+/// Kalimat suara navigasi. Instruksi belok dari MapKit mengikuti bahasa iPhone
+/// (lihat CFBundleAllowMixedLocalizations di Info.plist), jadi kalimat
+/// pembuka dan suara TTS ikut bahasa yang sama supaya tidak campur aduk.
+nonisolated struct VoicePhrases {
+    let indonesian: Bool
+
+    static var current: VoicePhrases {
+        let lang = Locale.preferredLanguages.first?.lowercased() ?? "id"
+        return VoicePhrases(indonesian: lang.hasPrefix("id") || lang.hasPrefix("ms"))
+    }
+
+    /// Kode bahasa untuk AVSpeechSynthesisVoice.
+    var voiceLanguage: String {
+        indonesian ? "id-ID" : (Locale.preferredLanguages.first ?? "en-US")
+    }
+
+    func upcoming(_ meters: Double, _ instruction: String) -> String {
+        indonesian ? "\(DistanceText.spoken(meters)) lagi, \(instruction)"
+                   : "In \(DistanceText.spoken(meters, indonesian: false)), \(instruction)"
+    }
+    func start(_ meters: Double, _ instruction: String) -> String {
+        let first = instruction.isEmpty ? "" : " " + upcoming(meters, instruction)
+        return (indonesian ? "Mulai navigasi." : "Starting navigation.") + first
+    }
+    var continueText: String { indonesian ? "Lanjutkan" : "Continue" }
+    var arriveText: String { indonesian ? "Tiba di tujuan" : "Arrive at destination" }
+    var rerouted: String { indonesian ? "Rute diperbarui." : "Route updated." }
+    var arrived: String { indonesian ? "Anda telah tiba di tujuan." : "You have arrived at your destination." }
 }

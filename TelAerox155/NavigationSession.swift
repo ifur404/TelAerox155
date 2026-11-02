@@ -61,16 +61,24 @@ final class NavigationSession: NSObject, ObservableObject, CLLocationManagerDele
             } else if phase == .navigating, !nextInstruction.isEmpty {
                 // Baru dinyalakan di tengah jalan: langsung ucapkan instruksi
                 // berikutnya supaya pengendara tidak menunggu ambang jarak.
-                say("\(DistanceText.spoken(distanceToManeuver)) lagi, \(nextInstruction)")
+                say(phrases.upcoming(distanceToManeuver, nextInstruction))
             }
         }
     }
+
+    /// Prakiraan hujan di sepanjang rute (Open-Meteo). nil = belum ada data.
+    @Published private(set) var rainOutlook: RainOutlook?
 
     // MARK: Internal
 
     private let manager = CLLocationManager()
     private let completer = MKLocalSearchCompleter()
     private let speech = AVSpeechSynthesizer()
+    private var phrases: VoicePhrases { VoicePhrases.current }
+    private var weatherTask: Task<Void, Never>?
+    private var lastWeatherAt: Date?
+    /// Interval cek ulang cuaca selama navigasi.
+    private let weatherRefreshInterval: TimeInterval = 600
 
     private var geometry: RouteGeometry?
     private var progress: Double = 0
@@ -118,6 +126,7 @@ final class NavigationSession: NSObject, ObservableObject, CLLocationManagerDele
     /// baterai tidak terkuras di belakang layar.
     func deactivate() {
         routeTask?.cancel()
+        weatherTask?.cancel()
         manager.stopUpdatingLocation()
         setBackgroundUpdates(false)
         speech.stopSpeaking(at: .immediate)
@@ -154,6 +163,9 @@ final class NavigationSession: NSObject, ObservableObject, CLLocationManagerDele
         destination = nil
         route = nil
         geometry = nil
+        weatherTask?.cancel()
+        rainOutlook = nil
+        lastWeatherAt = nil
         phase = .planning
         setBackgroundUpdates(false)
         speech.stopSpeaking(at: .immediate)
@@ -179,7 +191,8 @@ final class NavigationSession: NSObject, ObservableObject, CLLocationManagerDele
         setBackgroundUpdates(true)
         if let loc = location { updateProgress(with: loc) }
         if voiceEnabled {
-            say("Mulai navigasi. \(nextInstruction.isEmpty ? "" : "\(DistanceText.spoken(distanceToManeuver)) lagi, \(nextInstruction)")")
+            say(phrases.start(distanceToManeuver, nextInstruction))
+            if let rain = rainOutlook, rain.isRain { say(rain.text(indonesian: phrases.indonesian)) }
         }
     }
 
@@ -214,7 +227,7 @@ final class NavigationSession: NSObject, ObservableObject, CLLocationManagerDele
             }
             apply(route)
             if isReroute {
-                if voiceEnabled { say("Rute diperbarui.") }
+                if voiceEnabled { say(phrases.rerouted) }
                 phase = .navigating
             } else {
                 phase = .preview
@@ -232,6 +245,31 @@ final class NavigationSession: NSObject, ObservableObject, CLLocationManagerDele
         offRouteCount = 0
         spoken.removeAll()
         if let loc = location { updateProgress(with: loc) } else { refreshInstruction() }
+        refreshWeather()
+    }
+
+    // MARK: - Cuaca
+
+    /// Ambil prakiraan hujan untuk titik-titik di sisa rute. Gagal = diam
+    /// (banner cuaca disembunyikan), navigasi tetap jalan normal.
+    private func refreshWeather() {
+        guard let geometry, let route else { return }
+        lastWeatherAt = Date()
+        let remaining = geometry.totalDistance > 0 ? max(geometry.totalDistance - progress, 0) / geometry.totalDistance : 0
+        let points = RainForecast.checkpoints(geometry: geometry, progress: progress,
+                                              remainingTime: route.expectedTravelTime * remaining, now: Date())
+        weatherTask?.cancel()
+        weatherTask = Task { [weak self] in
+            let result = try? await RainForecast.fetch(points: points)
+            guard let self, !Task.isCancelled else { return }
+            let previous = self.rainOutlook
+            self.rainOutlook = result
+            // Umumkan hanya saat status berubah jadi hujan, bukan tiap refresh.
+            if let result, result.isRain, self.phase == .navigating, self.voiceEnabled,
+               previous?.kind != result.kind {
+                self.say(result.text(indonesian: self.phrases.indonesian))
+            }
+        }
     }
 
     private func updateProgress(with loc: CLLocation) {
@@ -258,10 +296,15 @@ final class NavigationSession: NSObject, ObservableObject, CLLocationManagerDele
         let fraction = geometry.totalDistance > 0 ? remainingDistance / geometry.totalDistance : 0
         remainingTime = route.expectedTravelTime * fraction
 
+        if phase == .navigating,
+           lastWeatherAt.map({ Date().timeIntervalSince($0) > weatherRefreshInterval }) ?? true {
+            refreshWeather()
+        }
+
         if phase == .navigating, remainingDistance <= arrivalThreshold {
             phase = .arrived
             setBackgroundUpdates(false)
-            if voiceEnabled { say("Anda telah tiba di tujuan.") }
+            if voiceEnabled { say(phrases.arrived) }
         }
     }
 
@@ -272,13 +315,13 @@ final class NavigationSession: NSObject, ObservableObject, CLLocationManagerDele
         let nextIndex = current + 1
         if nextIndex < steps.count {
             let step = steps[nextIndex]
-            nextInstruction = step.instructions.isEmpty ? "Lanjutkan" : step.instructions
+            nextInstruction = step.instructions.isEmpty ? phrases.continueText : step.instructions
             nextManeuver = ManeuverKind(instruction: step.instructions)
             distanceToManeuver = max(geometry.stepEnds[current] - progress, 0)
             let after = nextIndex + 1
             thenInstruction = after < steps.count && !steps[after].instructions.isEmpty ? steps[after].instructions : nil
         } else {
-            nextInstruction = "Tiba di tujuan"
+            nextInstruction = phrases.arriveText
             nextManeuver = .arrive
             distanceToManeuver = max(geometry.totalDistance - progress, 0)
             thenInstruction = nil
@@ -299,7 +342,7 @@ final class NavigationSession: NSObject, ObservableObject, CLLocationManagerDele
             if threshold == 40 {
                 say(nextInstruction)
             } else {
-                say("\(DistanceText.spoken(d)) lagi, \(nextInstruction)")
+                say(phrases.upcoming(d, nextInstruction))
             }
             break
         }
@@ -312,7 +355,7 @@ final class NavigationSession: NSObject, ObservableObject, CLLocationManagerDele
         guard !trimmed.isEmpty else { return }
         activateAudioSession()
         let utterance = AVSpeechUtterance(string: trimmed)
-        utterance.voice = AVSpeechSynthesisVoice(language: "id-ID")
+        utterance.voice = AVSpeechSynthesisVoice(language: phrases.voiceLanguage)
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
         speech.speak(utterance)
     }

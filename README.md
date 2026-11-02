@@ -21,6 +21,9 @@ diagnostik atau perintah kontrol kendaraan.
 - Merekam telemetri motor dan sensor iPhone ke CSV, lalu meninjau grafik, kualitas data, dan
   kejadian perjalanan.
 - Mengekspor log BLE untuk diagnosis dengan penyensoran informasi sensitif.
+- Navigasi turn-by-turn di dalam app (MapKit, tanpa tol) dengan suara Indonesia/Inggris, overlay
+  telemetri motor, prakiraan hujan di sepanjang rute dari [Open-Meteo](https://open-meteo.com)
+  (CC BY 4.0), dan tombol cadangan untuk membuka rute di Google Maps mode motor.
 
 Dukungan input empat digit rangka tersedia di antarmuka, tetapi belum dapat menyelesaikan pairing
 karena integrasi login Yamaha belum tersedia.

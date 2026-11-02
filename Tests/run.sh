@@ -22,7 +22,7 @@ xcrun swiftc -parse-as-library -default-isolation MainActor -module-cache-path "
 "$check_dir/pairing-checks"
 
 xcrun swiftc -parse-as-library -default-isolation MainActor -module-cache-path "$check_dir/modules" \
-  TelAerox155/RouteProgress.swift Tests/NavigationChecks.swift -o "$check_dir/navigation-checks"
+  TelAerox155/RouteProgress.swift TelAerox155/RainForecast.swift Tests/NavigationChecks.swift -o "$check_dir/navigation-checks"
 "$check_dir/navigation-checks"
 
 bash Tests/run-yamaha-pairing.sh "$check_dir/yamaha-proof"

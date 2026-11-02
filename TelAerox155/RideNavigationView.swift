@@ -13,6 +13,7 @@ struct RideNavigationView: View {
     @State private var camera: MapCameraPosition = .userLocation(fallback: .automatic)
     @FocusState private var searchFocused: Bool
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         ZStack {
@@ -71,7 +72,10 @@ struct RideNavigationView: View {
     private var topPanel: some View {
         switch nav.phase {
         case .navigating, .arrived:
-            maneuverBanner
+            VStack(spacing: 8) {
+                maneuverBanner
+                if nav.phase == .navigating, let rain = nav.rainOutlook { weatherChip(rain) }
+            }
         default:
             searchPanel
         }
@@ -179,8 +183,9 @@ struct RideNavigationView: View {
     @ViewBuilder
     private var bottomPanel: some View {
         VStack(spacing: 10) {
-            HStack {
+            HStack(spacing: 8) {
                 Spacer()
+                if nav.phase == .navigating { googleMapsButton(compact: true) }
                 if nav.phase == .navigating && !camera.followsUserLocation {
                     Button(action: followRider) {
                         Label("Ikuti", systemImage: "location.north.line.fill")
@@ -210,7 +215,10 @@ struct RideNavigationView: View {
                 statusCard {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                     Text(message).font(.subheadline).frame(maxWidth: .infinity, alignment: .leading)
-                    Button("Coba lagi") { nav.retry() }.buttonStyle(.borderedProminent).tint(accent)
+                    VStack(spacing: 8) {
+                        Button("Coba lagi") { nav.retry() }.buttonStyle(.borderedProminent).tint(accent)
+                        if nav.destination != nil { googleMapsButton(compact: true) }
+                    }
                 }
             }
         }
@@ -234,6 +242,7 @@ struct RideNavigationView: View {
                 }
                 .accessibilityLabel("Batalkan tujuan")
             }
+            if let rain = nav.rainOutlook { weatherChip(rain) }
             HStack(spacing: 10) {
                 voiceToggle
                 Button {
@@ -246,8 +255,12 @@ struct RideNavigationView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(accent)
             }
-            Text("Waktu tempuh dari Apple Maps untuk mobil; motor bisa lebih cepat.")
-                .font(.caption2).foregroundStyle(.secondary)
+            HStack(alignment: .center) {
+                Text("Waktu tempuh dari Apple Maps untuk mobil; motor bisa lebih cepat.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                googleMapsButton(compact: false)
+            }
         }
         .padding(16)
         .background(panelBackground)
@@ -297,6 +310,59 @@ struct RideNavigationView: View {
         }
         .padding(14)
         .background(panelBackground)
+    }
+
+    /// Prakiraan hujan dari Open-Meteo. Atribusi "Open-Meteo.com" wajib
+    /// ditampilkan (lisensi data CC BY 4.0).
+    private func weatherChip(_ rain: RainOutlook) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: rain.symbol)
+                .symbolRenderingMode(.multicolor)
+                .font(.title3)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(rain.text(indonesian: true))
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                Text("Cuaca: Open-Meteo.com · \(rain.fetchedAt.formatted(date: .omitted, time: .shortened))")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 14)
+            .fill(rain.isRain ? Color.orange.opacity(0.28) : Color.white.opacity(0.08)))
+        .background(RoundedRectangle(cornerRadius: 14).fill(Color(red: 0.06, green: 0.09, blue: 0.14).opacity(0.9)))
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Buka tujuan yang sama di Google Maps mode motor (two-wheeler). Kalau app
+    /// Google Maps terpasang, universal link ini langsung membukanya; kalau
+    /// tidak, terbuka di browser.
+    @ViewBuilder
+    private func googleMapsButton(compact: Bool) -> some View {
+        if let url = googleMapsURL {
+            Button { openURL(url) } label: {
+                Label(compact ? "G Maps" : "Google Maps", systemImage: "arrow.up.forward.app")
+                    .font(compact ? .subheadline.weight(.semibold) : .caption.weight(.semibold))
+                    .padding(.horizontal, 12).frame(height: compact ? 44 : 32)
+                    .background(Capsule().fill(compact ? Color.black.opacity(0.7) : Color.white.opacity(0.1)))
+            }
+            .foregroundStyle(.white)
+            .accessibilityLabel("Buka rute di Google Maps")
+        }
+    }
+
+    private var googleMapsURL: URL? {
+        guard let c = nav.destination?.location.coordinate else { return nil }
+        var comps = URLComponents(string: "https://www.google.com/maps/dir/")
+        comps?.queryItems = [
+            URLQueryItem(name: "api", value: "1"),
+            URLQueryItem(name: "destination", value: String(format: "%.6f,%.6f", c.latitude, c.longitude)),
+            URLQueryItem(name: "travelmode", value: "two-wheeler"),
+            URLQueryItem(name: "dir_action", value: "navigate"),
+        ]
+        return comps?.url
     }
 
     /// Tombol suara on/off — besar dan berlabel supaya gampang ditekan pakai

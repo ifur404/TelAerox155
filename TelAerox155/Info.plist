@@ -18,6 +18,12 @@
 		<string>bluetooth-central</string>
 		<string>location</string>
 	</array>
+	<!-- App ini belum dilokalisasi (hanya en), jadi tanpa key ini framework
+	     sistem ikut bahasa app: instruksi belok MapKit keluar dalam bahasa
+	     Inggris walau iPhone berbahasa Indonesia. Dengan key ini MapKit
+	     memakai bahasa iPhone, dan suara navigasi menyesuaikan (VoicePhrases). -->
+	<key>CFBundleAllowMixedLocalizations</key>
+	<true/>
 	<!-- Folder Documents (tempat file rekaman sesi) tampil di app Files ›
 	     Di iPhone Saya › TelAerox — supaya rekaman bisa diakses/dibackup
 	     langsung, tidak cuma lewat share sheet di dalam app. -->
