@@ -10,6 +10,7 @@ struct ContentView: View {
     @AppStorage("keepAlivePolicy") private var keepAlivePolicyRaw: String = KeepAlivePolicy.full.rawValue
     @State private var showPairing = false
     @State private var showRecordSheet = false
+    @State private var showNavigation = false
     @State private var showAuthCopiedToast = false
     @State private var displayTime = Date()
     @Environment(\.scenePhase) private var scenePhase
@@ -44,9 +45,9 @@ struct ContentView: View {
             RecordingDock(recorder: store.recorder) { showRecordSheet = true }
         }
         .preferredColorScheme(.dark)
-        .task(id: store.isActive && scenePhase == .active && !showRecordSheet && selectedSensorKey == nil) {
+        .task(id: store.isActive && scenePhase == .active && !showRecordSheet && !showNavigation && selectedSensorKey == nil) {
             // Clock usia sensor hanya dibutuhkan selama dashboard live terlihat.
-            guard store.isActive, scenePhase == .active, !showRecordSheet, selectedSensorKey == nil else { return }
+            guard store.isActive, scenePhase == .active, !showRecordSheet, !showNavigation, selectedSensorKey == nil else { return }
             while !Task.isCancelled {
                 displayTime = Date()
                 do { try await Task.sleep(for: .seconds(1)) }
@@ -59,6 +60,9 @@ struct ContentView: View {
             Text(store.errorMessage ?? "Terjadi kesalahan")
         }
         .sheet(isPresented: $showPairing) { PairingView(store: store) }
+        .fullScreenCover(isPresented: $showNavigation) {
+            RideNavigationView(store: store, accent: accent)
+        }
         .sheet(isPresented: $showRecordSheet) {
             RecordingView(store: store, recorder: store.recorder, library: store.recorder.library,
                           location: store.location, accent: accent)
@@ -85,6 +89,11 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button { showNavigation = true } label: {
+                    Image(systemName: "map.fill").font(.title3)
+                }
+                .accessibilityLabel("Navigasi")
+                .frame(width: 44, height: 44)
                 Button { showPairing = true } label: {
                     Image(systemName: "qrcode").font(.title3)
                 }

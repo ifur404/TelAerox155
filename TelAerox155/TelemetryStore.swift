@@ -431,9 +431,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     /// Jaga layar tetap nyala pas streaming (dipasang di motor, jangan sampai
     /// mati sendiri di tengah jalan) — dimatikan lagi begitu keluar streaming.
     private func setIdleTimerDisabled(_ disabled: Bool) {
-        #if canImport(UIKit)
-        UIApplication.shared.isIdleTimerDisabled = disabled
-        #endif
+        ScreenAwake.set(.telemetry, disabled)
     }
 
     // MARK: - YConnectClientDelegate
