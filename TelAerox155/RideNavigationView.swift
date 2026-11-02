@@ -11,6 +11,13 @@ struct RideNavigationView: View {
 
     @StateObject private var nav = NavigationSession()
     @State private var camera: MapCameraPosition = .userLocation(fallback: .automatic)
+    /// Kamera navigasi mengikuti pengendara (dimatikan saat peta digeser jari).
+    @State private var following = false
+    /// Arah terakhir yang valid — GPS tidak memberi arah saat motor diam.
+    @State private var lastHeading: CLLocationDirection = 0
+    /// Pilihan peta 3D (gedung + kamera miring), disimpan antar sesi.
+    @AppStorage("navMap3D") private var map3D = true
+    @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
     @FocusState private var searchFocused: Bool
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
@@ -27,10 +34,24 @@ struct RideNavigationView: View {
         .onDisappear { nav.deactivate() }
         .onChange(of: nav.phase) { _, phase in
             switch phase {
-            case .preview: showWholeRoute()
+            case .preview: following = false; showWholeRoute()
             case .navigating: followRider()
-            default: break
+            default: following = false
             }
+        }
+        .onChange(of: nav.location) { _, _ in
+            if following { updateRiderCamera(animated: true) }
+        }
+        .onChange(of: camera.positionedByUser) { _, byUser in
+            // Peta digeser/diputar jari → berhenti mengikuti sampai tombol "Ikuti".
+            if byUser { following = false }
+        }
+        .onChange(of: show3D) { _, _ in
+            if following { updateRiderCamera(animated: true) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name.NSProcessInfoPowerStateDidChange)
+            .receive(on: DispatchQueue.main)) { _ in
+            lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
         }
     }
 
@@ -48,16 +69,43 @@ struct RideNavigationView: View {
                     .tint(.red)
             }
         }
-        // Peta 2D (tanpa gedung 3D) lebih ringan untuk GPU = lebih hemat baterai.
-        .mapStyle(.standard(elevation: .flat, pointsOfInterest: .including([.gasStation, .evCharger, .parking])))
+        // 3D (gedung + medan) lebih berat untuk GPU; otomatis 2D saat Mode
+        // Daya Rendah supaya baterai tidak terkuras.
+        .mapStyle(.standard(elevation: show3D ? .realistic : .flat,
+                            pointsOfInterest: .including([.gasStation, .evCharger, .parking])))
         .mapControls {
             MapCompass()
+            MapPitchToggle()
             MapScaleView()
         }
     }
 
+    private var show3D: Bool { map3D && !lowPower }
+
     private func followRider() {
-        withAnimation { camera = .userLocation(followsHeading: true, fallback: .automatic) }
+        following = true
+        updateRiderCamera(animated: true)
+    }
+
+    /// Kamera ala navigasi: di belakang pengendara menghadap arah jalan.
+    /// 3D = miring 60° lebih dekat; 2D = tegak lurus dari atas.
+    private func updateRiderCamera(animated: Bool) {
+        guard let loc = nav.location else {
+            camera = .userLocation(followsHeading: true, fallback: .automatic)
+            return
+        }
+        // Arah dari GPS hanya dipercaya saat bergerak (> ~5 km/j).
+        if loc.course >= 0, loc.speed > 1.5 { lastHeading = loc.course }
+        let speedKmh = max(loc.speed, 0) * 3.6
+        // Makin cepat, makin jauh pandangannya ke depan.
+        let distance: CLLocationDistance = show3D ? 350 + min(speedKmh, 80) * 6 : 700 + min(speedKmh, 80) * 10
+        let target = MapCamera(centerCoordinate: loc.coordinate, distance: distance,
+                               heading: lastHeading, pitch: show3D ? 60 : 0)
+        if animated {
+            withAnimation(.linear(duration: 0.8)) { camera = .camera(target) }
+        } else {
+            camera = .camera(target)
+        }
     }
 
     private func showWholeRoute() {
@@ -187,7 +235,8 @@ struct RideNavigationView: View {
             HStack(spacing: 8) {
                 Spacer()
                 if nav.phase == .navigating { googleMapsButton(compact: true) }
-                if nav.phase == .navigating && !camera.followsUserLocation {
+                if nav.phase == .navigating { mapModeButton }
+                if nav.phase == .navigating && !following {
                     Button(action: followRider) {
                         Label("Ikuti", systemImage: "location.north.line.fill")
                             .font(.subheadline.weight(.semibold))
@@ -311,6 +360,21 @@ struct RideNavigationView: View {
         }
         .padding(14)
         .background(panelBackground)
+    }
+
+    /// Ganti peta 3D/2D. Saat Mode Daya Rendah selalu 2D.
+    private var mapModeButton: some View {
+        Button { map3D.toggle() } label: {
+            Text(show3D ? "3D" : "2D")
+                .font(.subheadline.weight(.bold))
+                .frame(width: 52, height: 44)
+                .background(Capsule().fill(.black.opacity(0.7)))
+        }
+        .foregroundStyle(lowPower ? .secondary : .white)
+        .disabled(lowPower)
+        .accessibilityLabel("Mode peta")
+        .accessibilityValue(show3D ? "3D" : "2D")
+        .accessibilityHint(lowPower ? "Mode Daya Rendah aktif, peta 2D" : "Ketuk dua kali untuk ganti mode peta")
     }
 
     /// Prakiraan hujan dari Open-Meteo. Atribusi "Open-Meteo.com" wajib
