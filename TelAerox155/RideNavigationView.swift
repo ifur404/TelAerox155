@@ -48,7 +48,8 @@ struct RideNavigationView: View {
                     .tint(.red)
             }
         }
-        .mapStyle(.standard(elevation: .realistic, pointsOfInterest: .including([.gasStation, .evCharger, .parking])))
+        // Peta 2D (tanpa gedung 3D) lebih ringan untuk GPU = lebih hemat baterai.
+        .mapStyle(.standard(elevation: .flat, pointsOfInterest: .including([.gasStation, .evCharger, .parking])))
         .mapControls {
             MapCompass()
             MapScaleView()

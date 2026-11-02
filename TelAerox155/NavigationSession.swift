@@ -3,6 +3,7 @@ import Combine
 import CoreLocation
 import MapKit
 import AVFoundation
+import NaturalLanguage
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -30,7 +31,9 @@ final class NavigationSession: NSObject, ObservableObject, CLLocationManagerDele
 
     // MARK: Status publik untuk UI
 
-    @Published private(set) var phase: Phase = .planning
+    @Published private(set) var phase: Phase = .planning {
+        didSet { if phase != oldValue { applyPowerProfile() } }
+    }
     @Published private(set) var authorizationStatus: CLAuthorizationStatus
     @Published private(set) var location: CLLocation?
 
@@ -74,7 +77,11 @@ final class NavigationSession: NSObject, ObservableObject, CLLocationManagerDele
     private let manager = CLLocationManager()
     private let completer = MKLocalSearchCompleter()
     private let speech = AVSpeechSynthesizer()
-    private var phrases: VoicePhrases { VoicePhrases.current }
+    /// Diperbarui tiap rute baru sesuai bahasa instruksi MapKit.
+    private var phrases = VoicePhrases.current
+    private var cancellables = Set<AnyCancellable>()
+    /// true selama layar navigasi terbuka (antara activate dan deactivate).
+    private var isPresented = false
     private var weatherTask: Task<Void, Never>?
     private var lastWeatherAt: Date?
     /// Interval cek ulang cuaca selama navigasi.
@@ -98,19 +105,20 @@ final class NavigationSession: NSObject, ObservableObject, CLLocationManagerDele
         voiceEnabled = UserDefaults.standard.object(forKey: "navVoiceEnabled") as? Bool ?? true
         super.init()
         manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
         manager.activityType = .automotiveNavigation
-        manager.distanceFilter = 3
         manager.pausesLocationUpdatesAutomatically = false
         manager.showsBackgroundLocationIndicator = true
         completer.delegate = self
         completer.resultTypes = [.address, .pointOfInterest]
+        applyPowerProfile()
+        observePowerState()
     }
 
     // MARK: - Siklus hidup
 
     /// Dipanggil saat layar navigasi muncul.
     func activate() {
+        isPresented = true
         switch authorizationStatus {
         case .notDetermined:
             manager.requestWhenInUseAuthorization()
@@ -119,12 +127,13 @@ final class NavigationSession: NSObject, ObservableObject, CLLocationManagerDele
         default:
             break
         }
-        setScreenAwake(true)
+        applyPowerProfile()
     }
 
     /// Dipanggil saat layar navigasi ditutup: GPS dan suara dihentikan supaya
     /// baterai tidak terkuras di belakang layar.
     func deactivate() {
+        isPresented = false
         routeTask?.cancel()
         weatherTask?.cancel()
         manager.stopUpdatingLocation()
@@ -241,6 +250,7 @@ final class NavigationSession: NSObject, ObservableObject, CLLocationManagerDele
     private func apply(_ route: MKRoute) {
         self.route = route
         geometry = RouteGeometry(steps: route.steps.map { $0.polyline.coordinates })
+        phrases = NavigationSession.phrases(for: route)
         progress = 0
         offRouteCount = 0
         spoken.removeAll()
@@ -375,13 +385,65 @@ final class NavigationSession: NSObject, ObservableObject, CLLocationManagerDele
         #endif
     }
 
+    // MARK: - Hemat baterai
+
+    /// Profil GPS dan layar menurut fase:
+    /// - Cari tujuan / pratinjau: akurasi ±10 m, update tiap 25 m — cukup untuk
+    ///   titik awal rute dan pencarian sekitar; layar boleh auto-lock.
+    /// - Navigasi: akurasi terbaik, layar tetap nyala. Mode "BestForNavigation"
+    ///   (fusi sensor paling boros) hanya saat iPhone dicas dan Mode Daya Rendah
+    ///   mati, sesuai saran Apple.
+    ///
+    /// GPS hardware dipakai bersama dengan LocationProvider (rekaman CSV):
+    /// iOS menjalankan satu sesi GPS dengan akurasi tertinggi yang diminta,
+    /// jadi dua manager tidak menyalakan GPS dua kali dan tidak saling bentrok.
+    private func applyPowerProfile() {
+        let lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+        if phase == .navigating {
+            #if canImport(UIKit)
+            let state = UIDevice.current.batteryState
+            let plugged = state == .charging || state == .full
+            #else
+            let plugged = false
+            #endif
+            manager.desiredAccuracy = plugged && !lowPower ? kCLLocationAccuracyBestForNavigation : kCLLocationAccuracyBest
+            manager.distanceFilter = lowPower ? 10 : 5
+            setScreenAwake(isPresented)
+        } else {
+            manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+            manager.distanceFilter = 25
+            setScreenAwake(false)
+        }
+    }
+
+    private func observePowerState() {
+        #if canImport(UIKit)
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        NotificationCenter.default.publisher(for: UIDevice.batteryStateDidChangeNotification)
+            .merge(with: NotificationCenter.default.publisher(for: Notification.Name.NSProcessInfoPowerStateDidChange))
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.applyPowerProfile() }
+            .store(in: &cancellables)
+        #endif
+    }
+
+    /// Bahasa suara mengikuti bahasa instruksi yang dikirim MapKit. Kalau
+    /// bukan Indonesia (mis. MapKit belum mendukung), pakai Inggris.
+    private static func phrases(for route: MKRoute) -> VoicePhrases {
+        let text = route.steps.map(\.instructions).joined(separator: ". ")
+        guard !text.trimmingCharacters(in: .whitespaces).isEmpty else { return .current }
+        let recognizer = NLLanguageRecognizer()
+        recognizer.languageConstraints = [.indonesian, .malay, .english]
+        recognizer.processString(text)
+        let lang = recognizer.dominantLanguage
+        return VoicePhrases(indonesian: lang == .indonesian || lang == .malay)
+    }
+
     // MARK: - Helper sistem
 
     private func setScreenAwake(_ awake: Bool) {
-        #if canImport(UIKit)
-        // iPhone di holder: layar jangan auto-lock selama layar navigasi terbuka.
-        UIApplication.shared.isIdleTimerDisabled = awake
-        #endif
+        // iPhone di holder: layar jangan auto-lock selama navigasi berjalan.
+        ScreenAwake.set(.navigation, awake)
     }
 
     /// Lanjutkan GPS saat layar terkunci, hanya selama navigasi aktif. Sama

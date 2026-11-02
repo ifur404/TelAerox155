@@ -165,9 +165,10 @@ nonisolated enum DistanceText {
     }
 }
 
-/// Kalimat suara navigasi. Instruksi belok dari MapKit mengikuti bahasa iPhone
-/// (lihat CFBundleAllowMixedLocalizations di Info.plist), jadi kalimat
-/// pembuka dan suara TTS ikut bahasa yang sama supaya tidak campur aduk.
+/// Kalimat suara navigasi. Bahasanya mengikuti bahasa instruksi belok yang
+/// benar-benar dikirim MapKit (dideteksi di NavigationSession), bukan sekadar
+/// bahasa iPhone: kalau MapKit belum mendukung Bahasa Indonesia, semuanya
+/// otomatis jadi Inggris supaya tidak campur aduk.
 nonisolated struct VoicePhrases {
     let indonesian: Bool
 
@@ -177,9 +178,7 @@ nonisolated struct VoicePhrases {
     }
 
     /// Kode bahasa untuk AVSpeechSynthesisVoice.
-    var voiceLanguage: String {
-        indonesian ? "id-ID" : (Locale.preferredLanguages.first ?? "en-US")
-    }
+    var voiceLanguage: String { indonesian ? "id-ID" : "en-US" }
 
     func upcoming(_ meters: Double, _ instruction: String) -> String {
         indonesian ? "\(DistanceText.spoken(meters)) lagi, \(instruction)"
