@@ -1,5 +1,6 @@
 import SwiftUI
 import MapKit
+import Combine
 
 /// Layar navigasi full-screen untuk iPhone di holder: peta mengikuti arah
 /// motor, petunjuk belok besar di atas, dan telemetri motor (kalau terhubung)

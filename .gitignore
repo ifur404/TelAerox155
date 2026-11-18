@@ -1,4 +1,6 @@
-# Kredensial motor — jangan commit/share
+# Kredensial motor & API key publish — jangan commit/share
+.env
+.env.*
 secrets.local.json
 TelAerox155/secrets.local.json
 

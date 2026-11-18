@@ -34,6 +34,14 @@ VIN, CCUID, UUID ponsel, dan capture BLE mentah sebagai data sensitif.
   `YConnectClient` dibuat dengan `queue: nil` karena delegate dipanggil di main queue. Jika memakai
   queue kustom, method delegate perlu `nonisolated` dan perpindahan eksplisit ke `MainActor`.
 
+## Publish ke production
+
+Jika diminta upload/publish/rilis aplikasi ke production, ikuti
+[`docs/publish-production.md`](docs/publish-production.md) dan gunakan `scripts/publish-sideload.sh`.
+API key `SIDELOAD_KEY` dibaca dari `.env` di root repo; jangan mencetak, commit, atau mengirim isinya
+ke tempat lain. Publish hanya dijalankan atas permintaan eksplisit, dan naikkan
+`CURRENT_PROJECT_VERSION` terlebih dahulu.
+
 ## Sebelum commit atau push
 
 - Build project di Xcode dan pastikan tidak ada error atau warning baru.
