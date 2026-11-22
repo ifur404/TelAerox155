@@ -4,7 +4,7 @@ import UIKit
 #endif
 
 struct ContentView: View {
-    @StateObject private var store = TelemetryStore()
+    @ObservedObject var store: TelemetryStore
     // Default "Penuh" — hasil uji lapangan paling stabil. Perangkat yang sudah
     // pernah menyimpan pilihan lain tidak ikut berubah (lihat TelemetryStore).
     @AppStorage("keepAlivePolicy") private var keepAlivePolicyRaw: String = KeepAlivePolicy.full.rawValue
@@ -42,7 +42,7 @@ struct ContentView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            RecordingDock(recorder: store.recorder) { showRecordSheet = true }
+            RecordingDock(store: store, recorder: store.recorder) { showRecordSheet = true }
         }
         .preferredColorScheme(.dark)
         .task(id: store.isActive && scenePhase == .active && !showRecordSheet && !showNavigation && selectedSensorKey == nil) {
@@ -127,11 +127,13 @@ struct ContentView: View {
             label = "Putuskan"; icon = "stop.circle.fill"
         } else if store.isConnecting {
             label = "Batalkan"; icon = "xmark.circle.fill"
+        } else if store.isStandby {
+            label = "Jeda"; icon = "pause.circle.fill"
         } else {
             label = store.hasPairing ? "Hubungkan" : "Pairing"; icon = "bolt.fill"
         }
         return Button {
-            if store.isActive || store.isConnecting {
+            if store.isActive || store.isConnecting || store.isStandby {
                 store.disconnect()
             } else if store.hasPairing {
                 store.connect()
@@ -250,6 +252,10 @@ struct ContentView: View {
 
     private var connectionDetails: some View {
         technicalPanel("Koneksi & pengaturan lanjutan") {
+            if store.isActive {
+                automationControls
+                Divider().overlay(.white.opacity(0.08))
+            }
             Text("Keep-alive").font(.subheadline.weight(.semibold))
             keepAlivePicker
             if store.state == .scanning || !store.discovered.isEmpty {
@@ -258,6 +264,78 @@ struct ContentView: View {
             if !store.authTrace.isEmpty { authTraceDebugList }
             Text("Log koneksi dapat memuat identitas perangkat. Periksa sebelum menyalin atau membagikannya.")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var automationCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .foregroundStyle(accent)
+                Text("Mode otomatis")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                Spacer()
+                Text(automationSummaryBadge)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(store.autoConnectEnabled || store.autoRecordEnabled ? accent : .secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background((store.autoConnectEnabled || store.autoRecordEnabled ? accent : Color.white).opacity(0.12),
+                                in: Capsule())
+            }
+            automationControls
+        }
+        .padding(16)
+        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 20))
+    }
+
+    private var automationSummaryBadge: String {
+        switch (store.autoConnectEnabled, store.autoRecordEnabled) {
+        case (true, true): return "Otomatis penuh"
+        case (true, false): return "Auto-hubung"
+        case (false, true): return "Auto-rekam"
+        case (false, false): return "Manual"
+        }
+    }
+
+    private var automationControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Hubungkan otomatis", isOn: $store.autoConnectEnabled)
+                    .tint(accent)
+                    .disabled(!store.hasPairing)
+                Text(store.hasPairing
+                     ? "Menunggu motor secara pasif lewat Bluetooth iOS tanpa scan terus-menerus (hemat baterai). Biarkan app di latar belakang dan jangan tutup paksa."
+                     : "Pasangkan motor terlebih dahulu untuk mengaktifkan hubungkan otomatis.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Divider().overlay(.white.opacity(0.08))
+
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("Rekam perjalanan otomatis", isOn: $store.autoRecordEnabled)
+                    .tint(accent)
+                Text("Otomatis mulai rekam Perjalanan (CSV) saat motor terhubung, dan berhenti otomatis setelah motor terputus agar GPS & sensor langsung mati.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if store.autoRecordEnabled {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Jeda berhenti otomatis saat terputus")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        Picker("Jeda berhenti otomatis", selection: $store.autoStopGracePeriod) {
+                            ForEach(AutoStopGracePeriod.allCases) { period in
+                                Text(period.shortLabel).tag(period)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                    }
+                    AutoRecordLocationHint(location: store.location, accent: accent)
+                }
+            }
         }
     }
 
@@ -565,7 +643,10 @@ struct ContentView: View {
     private var keepAlivePicker: some View {
         let policy = Binding<KeepAlivePolicy>(
             get: { KeepAlivePolicy(rawValue: keepAlivePolicyRaw) ?? .full },
-            set: { keepAlivePolicyRaw = $0.rawValue }
+            set: {
+                keepAlivePolicyRaw = $0.rawValue
+                store.keepAlivePolicy = $0
+            }
         )
         return VStack(spacing: 6) {
             Picker("Keep-alive 0xA6", selection: policy) {
@@ -598,18 +679,14 @@ struct ContentView: View {
         ScrollView {
             VStack(spacing: 18) {
                 VStack(spacing: 14) {
-                    Image(systemName: store.isConnecting ? "antenna.radiowaves.left.and.right" : "motorcycle")
+                    Image(systemName: idleIconName)
                         .font(.system(size: 48))
                         .foregroundStyle(accent)
                     if store.isConnecting { ProgressView().tint(accent) }
-                    Text(store.isConnecting ? statusText : (store.hasPairing ? "Siap terhubung" : "Pasangkan motor dulu"))
+                    Text(idleTitle)
                         .font(.title3.weight(.semibold))
                         .foregroundStyle(.white)
-                    Text(store.isConnecting
-                         ? "Dekatkan iPhone ke motor."
-                         : (store.hasPairing
-                            ? "Nyalakan kontak motor, lalu tekan Hubungkan."
-                            : "Pindai QR motor untuk mulai terhubung."))
+                    Text(idleSubtitle)
                         .font(.subheadline)
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.secondary)
@@ -618,6 +695,7 @@ struct ContentView: View {
                 .padding(24)
                 .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 24))
 
+                automationCard
                 connectionDetails
             }
             .padding(.horizontal)
@@ -625,6 +703,33 @@ struct ContentView: View {
             .padding(.top, 24)
             .padding(.bottom, 40)
         }
+    }
+
+    private var idleIconName: String {
+        if store.isConnecting || store.isStandby {
+            return "antenna.radiowaves.left.and.right"
+        }
+        return "motorcycle"
+    }
+
+    private var idleTitle: String {
+        if store.isConnecting { return statusText }
+        if store.isStandby { return "Siaga menunggu motor" }
+        if store.isAutoConnectPaused { return "Hubungkan otomatis dijeda" }
+        return store.hasPairing ? "Siap terhubung" : "Pasangkan motor dulu"
+    }
+
+    private var idleSubtitle: String {
+        if store.isConnecting { return "Dekatkan iPhone ke motor." }
+        if store.isStandby {
+            return "Nyalakan kontak motor untuk terhubung otomatis. Hemat baterai tanpa scan aktif — cukup biarkan app di latar belakang."
+        }
+        if store.isAutoConnectPaused {
+            return "Tekan Hubungkan untuk menyambung lagi atau aktifkan kembali mode siaga."
+        }
+        return store.hasPairing
+            ? "Nyalakan kontak motor, lalu tekan Hubungkan."
+            : "Pindai QR motor untuk mulai terhubung."
     }
 
     // MARK: - Helpers
@@ -636,7 +741,8 @@ struct ContentView: View {
 
     private var statusText: String {
         switch store.state {
-        case .poweredOff: return "Belum terhubung"
+        case .poweredOff: return store.isAutoConnectPaused ? "Otomatis dijeda" : "Belum terhubung"
+        case .standby: return "Siaga · menunggu motor…"
         case .scanning: return "Mencari CCU…"
         case .connecting: return "Menghubungkan…"
         case .authenticating: return "Otentikasi…"
@@ -648,6 +754,7 @@ struct ContentView: View {
     private var statusColor: Color {
         switch store.state {
         case .streaming: return .green
+        case .standby: return accent
         case .failed: return .red
         case .scanning, .connecting, .authenticating: return .orange
         case .poweredOff: return .gray
@@ -691,5 +798,5 @@ struct MetricValue: Identifiable {
 }
 
 #Preview {
-    ContentView()
+    ContentView(store: TelemetryStore())
 }

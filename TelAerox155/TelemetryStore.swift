@@ -51,6 +51,52 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     @Published var modelCode: String?
     @Published var errorMessage: String?
 
+    /// Toggle hubungkan otomatis (default OFF — perilaku lama tetap manual).
+    @Published var autoConnectEnabled: Bool = false {
+        didSet {
+            guard !isBootstrappingAutomation, autoConnectEnabled != oldValue else { return }
+            UserDefaults.standard.set(autoConnectEnabled, forKey: Self.autoConnectKey)
+            applyAutoConnectToggle(autoConnectEnabled)
+        }
+    }
+
+    /// Toggle rekam perjalanan otomatis (default OFF).
+    @Published var autoRecordEnabled: Bool = false {
+        didSet {
+            guard !isBootstrappingAutomation, autoRecordEnabled != oldValue else { return }
+            UserDefaults.standard.set(autoRecordEnabled, forKey: Self.autoRecordKey)
+            applyAutoRecordToggle(autoRecordEnabled)
+        }
+    }
+
+    /// Jeda tunggu sebelum rekaman otomatis berhenti saat motor terputus.
+    @Published var autoStopGracePeriod: AutoStopGracePeriod = .twoMinutes {
+        didSet {
+            guard !isBootstrappingAutomation, autoStopGracePeriod != oldValue else { return }
+            UserDefaults.standard.set(autoStopGracePeriod.rawValue, forKey: Self.autoStopGraceKey)
+            if let command = autoRecordCoordinator.setGracePeriod(
+                autoStopGracePeriod, isRecording: recorder.isRecording, at: Date()
+            ) {
+                executeAutoRecordCommands([command])
+            } else {
+                syncAutomationState()
+            }
+        }
+    }
+
+    @Published private(set) var recordingOwnership: RecordingOwnership = .none
+    @Published private(set) var autoStopDeadline: Date?
+    @Published private(set) var isAutoConnectPaused: Bool = false
+
+    private static let autoConnectKey = "autoConnectEnabled"
+    private static let autoRecordKey = "autoRecordEnabled"
+    private static let autoStopGraceKey = "autoStopGraceSeconds"
+
+    private var autoConnectPolicy = AutoConnectPolicy()
+    private var autoRecordCoordinator = AutoRecordCoordinator()
+    private var isBootstrappingAutomation = false
+    private var isHandlingRecorderStopInternally = false
+
     /// Kumpulan yang barusan kebaca, flat buat SwiftUI. Resize paling akhir aja.
     @Published private(set) var discovered: [DiscoveredDevice] = []
 
@@ -83,10 +129,32 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
 
     override init() {
         super.init()
+        #if canImport(UIKit)
+        appState = UIApplication.shared.applicationState == .background ? "background" : "foreground"
+        #endif
         do { hasPairing = try PairingFile.load() != nil }
-        catch { errorMessage = "Gagal membaca file pairing. Buka kunci iPhone dan coba lagi." }
+        catch {
+            if appState == "foreground" {
+                errorMessage = "Gagal membaca file pairing. Buka kunci iPhone dan coba lagi."
+            }
+        }
+        isBootstrappingAutomation = true
+        let defaults = UserDefaults.standard
+        let savedAutoConnect = defaults.bool(forKey: Self.autoConnectKey)
+        let savedAutoRecord = defaults.bool(forKey: Self.autoRecordKey)
+        let savedGraceRaw = defaults.object(forKey: Self.autoStopGraceKey) as? Int
+        let savedGrace = AutoStopGracePeriod.from(rawSeconds: savedGraceRaw ?? AutoStopGracePeriod.twoMinutes.rawValue)
+        autoConnectEnabled = savedAutoConnect
+        autoRecordEnabled = savedAutoRecord
+        autoStopGracePeriod = savedGrace
+        autoConnectPolicy = AutoConnectPolicy(isEnabled: savedAutoConnect, hasPairing: hasPairing)
+        autoRecordCoordinator = AutoRecordCoordinator(isEnabled: savedAutoRecord, gracePeriod: savedGrace)
+        isBootstrappingAutomation = false
+        syncAutomationState()
+
         bindRecorderToLocation()
         observeAppLifecycle()
+        startAutoConnectIfNeeded()
     }
 
     var isActive: Bool {
@@ -94,6 +162,14 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         case .streaming: return true
         default: return false
         }
+    }
+
+    var isStandby: Bool {
+        state == .standby
+    }
+
+    var isAutomaticRecording: Bool {
+        recorder.isRecording && recordingOwnership == .automatic
     }
 
     /// Sedang di tengah proses connect (scan → connect → auth), sebelum sampai
@@ -115,7 +191,128 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     @AppStorage("keepAlivePolicy") private var keepAlivePolicyRaw: String = KeepAlivePolicy.full.rawValue
     var keepAlivePolicy: KeepAlivePolicy {
         get { KeepAlivePolicy(rawValue: keepAlivePolicyRaw) ?? .full }
-        set { keepAlivePolicyRaw = newValue.rawValue }
+        set {
+            keepAlivePolicyRaw = newValue.rawValue
+            if isStandby { client?.keepAlivePolicy = newValue }
+        }
+    }
+
+    /// Masuk mode siaga pasif jika hubungkan otomatis aktif dan motor sudah
+    /// dipasangkan. Dipanggil saat launch (termasuk background launch untuk
+    /// CoreBluetooth State Restoration) dan saat kembali ke foreground.
+    func startAutoConnectIfNeeded() {
+        guard autoConnectPolicy.shouldBeStandby, pendingPairing == nil, client == nil else { return }
+        do {
+            guard let motor = try PairingFile.load() else {
+                hasPairing = false
+                _ = autoConnectPolicy.didForgetPairing()
+                syncAutomationState()
+                return
+            }
+            hasPairing = true
+            openConnection(motor.credentials, peripheralID: motor.peripheralID,
+                           pairing: false, passiveStandby: true)
+        } catch {
+            if appState == "foreground" {
+                errorMessage = "Gagal membaca file pairing. Buka kunci iPhone dan coba lagi."
+            }
+        }
+    }
+
+    private func applyAutoConnectToggle(_ enabled: Bool) {
+        let action = autoConnectPolicy.setEnabled(
+            enabled,
+            isCurrentlyConnectedOrConnecting: isActive || isConnecting,
+            isCurrentlyStandby: isStandby
+        )
+        if !enabled {
+            client?.passiveStandby = false
+        } else if isActive {
+            client?.passiveStandby = true
+        }
+        syncAutomationState()
+        switch action {
+        case .startStandby:
+            startAutoConnectIfNeeded()
+        case .stopStandby:
+            stopConnection(pauseAutoConnect: false)
+        case .none:
+            if !enabled && !isActive && !isConnecting && client != nil {
+                stopConnection(pauseAutoConnect: false)
+            }
+        }
+    }
+
+    private func applyAutoRecordToggle(_ enabled: Bool) {
+        if let command = autoRecordCoordinator.setEnabled(
+            enabled, isRecording: recorder.isRecording, at: Date()
+        ) {
+            executeAutoRecordCommands([command])
+        } else {
+            syncAutomationState()
+        }
+    }
+
+    private func syncAutomationState() {
+        isAutoConnectPaused = autoConnectPolicy.mode == .paused
+        recordingOwnership = recorder.isRecording ? autoRecordCoordinator.ownership : .none
+        autoStopDeadline = recorder.isRecording ? autoRecordCoordinator.autoStopDeadline : nil
+    }
+
+    /// Mulai rekaman manual dari tombol UI — ditandai manual agar tidak
+    /// dihentikan oleh mekanisme auto-stop.
+    @discardableResult
+    func startManualRecording(format: SessionRecorder.Format,
+                              includesMotionAndBarometer: Bool,
+                              placement: PhonePlacement) -> Bool {
+        let url = recorder.start(format: format,
+                                 includesMotionAndBarometer: includesMotionAndBarometer,
+                                 placement: placement)
+        guard url != nil else { return false }
+        autoRecordCoordinator.userStartedManualRecording()
+        syncAutomationState()
+        return true
+    }
+
+    /// Hentikan rekaman secara manual dari tombol UI — menahan auto-start ulang
+    /// selama sesi koneksi motor yang sama.
+    func stopManualRecording() {
+        isHandlingRecorderStopInternally = true
+        autoRecordCoordinator.userStoppedRecording()
+        recorder.stop()
+        isHandlingRecorderStopInternally = false
+        syncAutomationState()
+    }
+
+    private func executeAutoRecordCommands(_ commands: [AutoRecordCommand]) {
+        for command in commands {
+            switch command {
+            case .stopAutomaticRecording(let reason):
+                isHandlingRecorderStopInternally = true
+                recorder.stop(reason: reason)
+                isHandlingRecorderStopInternally = false
+            case .startAutomaticRecording:
+                let defaults = UserDefaults.standard
+                let includeSensors = defaults.object(forKey: "recordPhoneSensors") as? Bool ?? true
+                let placementRaw = defaults.string(forKey: "phonePlacement") ?? PhonePlacement.unknown.rawValue
+                let placement = PhonePlacement(rawValue: placementRaw) ?? .unknown
+                let url = recorder.start(format: .csv,
+                                         includesMotionAndBarometer: includeSensors,
+                                         placement: placement)
+                if url == nil {
+                    autoRecordCoordinator.recorderStoppedExternally()
+                }
+            }
+        }
+        syncAutomationState()
+    }
+
+    private func evaluateAutoRecordTick(at now: Date = Date()) {
+        if let command = autoRecordCoordinator.tick(isRecording: recorder.isRecording, at: now) {
+            executeAutoRecordCommands([command])
+        } else {
+            syncAutomationState()
+        }
     }
 
     func beginPairing(_ credentials: Credentials, device: NearbyPairingDevice) throws {
@@ -144,13 +341,15 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
 
     func cancelPairing() {
         guard pendingPairing != nil else { return }
-        disconnect()
+        stopConnection(pauseAutoConnect: false)
         pairingAttempt = .idle
+        startAutoConnectIfNeeded()
     }
 
     private func failPairing(_ message: String) {
-        disconnect()
+        stopConnection(pauseAutoConnect: false)
         pairingAttempt = .failed(message)
+        startAutoConnectIfNeeded()
     }
 
     func forgetPairing() throws {
@@ -158,23 +357,35 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         try PairingFile.remove()
         hasPairing = false
         pairingAttempt = .idle
+        let action = autoConnectPolicy.didForgetPairing()
+        if action == .stopStandby || isStandby {
+            stopConnection(pauseAutoConnect: false)
+        }
+        syncAutomationState()
     }
 
     func connect() {
+        autoConnectPolicy.userDidConnect()
+        syncAutomationState()
         do {
             guard let motor = try PairingFile.load() else {
                 hasPairing = false
+                _ = autoConnectPolicy.didForgetPairing()
+                syncAutomationState()
                 errorMessage = "Pilih motor dan selesaikan pairing terlebih dahulu."
                 return
             }
             hasPairing = true
-            openConnection(motor.credentials, peripheralID: motor.peripheralID, pairing: false)
+            openConnection(motor.credentials, peripheralID: motor.peripheralID,
+                           pairing: false, passiveStandby: false)
         } catch {
             errorMessage = "Gagal membaca file pairing. Buka kunci iPhone dan coba lagi."
         }
     }
 
-    private func openConnection(_ credentials: Credentials, peripheralID: UUID, pairing: Bool) {
+    private func openConnection(_ credentials: Credentials, peripheralID: UUID,
+                                pairing: Bool, passiveStandby: Bool = false) {
+        client?.delegate = nil
         client?.stop()
         client = nil
         snapshot = TelemetrySnapshot()
@@ -185,7 +396,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         discovered.removeAll()
         authTrace.removeAll()
         let c = YConnectClient(credentials: credentials, targetPeripheralID: peripheralID,
-                               restoresState: !pairing)
+                               restoresState: !pairing, passiveStandby: passiveStandby)
         c.keepAlivePolicy = keepAlivePolicy
         c.setBackgrounded(appState == "background")
         #if canImport(UIKit)
@@ -249,6 +460,13 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     }
 
     func disconnect() {
+        stopConnection(pauseAutoConnect: true)
+    }
+
+    private func stopConnection(pauseAutoConnect: Bool) {
+        if pauseAutoConnect {
+            autoConnectPolicy.userDidDisconnect()
+        }
         pendingPairing?.cancel()
         pendingPairing = nil
         pairingTimeout?.cancel()
@@ -264,14 +482,18 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         modelCode = nil
         setIdleTimerDisabled(false)
         recorder.appendRaw(.info, "=== disconnect() dipanggil user ===")
+        let commands = autoRecordCoordinator.bleStateChanged(
+            isStreaming: false, isRecording: recorder.isRecording, at: Date()
+        )
+        executeAutoRecordCommands(commands)
         // Rekaman (recorder.isRecording) SENGAJA tidak ikut dihentikan di sini
         // — "Putuskan" cuma memutus BLE, bukan "Stop Rekam". Timer 1 Hz juga
         // SENGAJA tidak ikut dimatikan kalau rekaman masih aktif: itu satu-
         // satunya yang mengecek limit durasi (recorder.enforceDurationLimitIfNeeded)
-        // walau BLE lagi terputus lama — tanpa ini, rekaman yang lupa di-Stop
-        // pas motor mati/keluar jangkauan bisa nyangkut nyala tanpa batas
-        // (baterai boros GPS terus, limit 6 jam nggak pernah kecek). Baris CSV
-        // iPhone tetap direkam; kolom motor kosong selagi terputus.
+        // dan jeda tunggu auto-stop walau BLE lagi terputus lama — tanpa ini,
+        // rekaman yang lupa di-Stop pas motor mati/keluar jangkauan bisa nyangkut
+        // nyala tanpa batas (baterai boros GPS terus, limit 6 jam nggak pernah kecek).
+        // Baris CSV iPhone tetap direkam; kolom motor kosong selagi terputus.
         if !recorder.isRecording {
             stopRecordingTimer()
         }
@@ -281,6 +503,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         // bindRecorderToLocation saat recorder benar-benar berhenti).
         let recordingCSV = recorder.isRecording && recorder.format == .csv
         if location.isActive && !recordingCSV { location.stop() }
+        syncAutomationState()
     }
 
     // MARK: - Sampling rekaman
@@ -299,11 +522,14 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
                 // Dicek tiap detik TERLEPAS dari state BLE/apakah ada baris
                 // baru ditulis — supaya rekaman yang idle lama (disconnect
                 // manual atau auto-reconnect berkepanjangan) tetap kena batas
-                // durasi otomatis (lihat dokblok disconnect()).
-                if self.recorder.format == .csv {
-                    self.sampleCSVIfDue()
-                } else {
-                    self.recorder.enforceDurationLimitIfNeeded()
+                // durasi & jeda tunggu auto-stop otomatis.
+                self.evaluateAutoRecordTick()
+                if self.recorder.isRecording {
+                    if self.recorder.format == .csv {
+                        self.sampleCSVIfDue()
+                    } else {
+                        self.recorder.enforceDurationLimitIfNeeded()
+                    }
                 }
                 if self.recorder.isRecording { self.startRecordingTimer() }
             }
@@ -330,6 +556,8 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     ///   walau dipicu dari dua tempat.
     private func sampleCSVIfDue() {
         guard recorder.isRecording, recorder.format == .csv else { return }
+        evaluateAutoRecordTick()
+        guard recorder.isRecording, recorder.format == .csv else { return }
         guard csvThrottle.consume(at: ProcessInfo.processInfo.systemUptime) else { return }
         recorder.enforceDurationLimitIfNeeded()
         guard recorder.isRecording else { return }
@@ -344,6 +572,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     private var recordingState: String {
         switch state {
         case .poweredOff: return "poweredOff"
+        case .standby: return "standby"
         case .scanning: return "scanning"
         case .connecting: return "connecting"
         case .authenticating: return "authenticating"
@@ -376,6 +605,10 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
                 self.location.stop()
                 self.phoneSensors.stop()
                 self.stopRecordingTimer()
+                if !self.isHandlingRecorderStopInternally {
+                    self.autoRecordCoordinator.recorderStoppedExternally()
+                }
+                self.syncAutomationState()
             }
         }
 
@@ -418,11 +651,18 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
             .store(in: &cancellables)
         NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)
             .sink { [weak self] _ in
-                self?.appState = "foreground"
-                if let self { self.snapshot = self.liveTelemetry.latest }
-                self?.client?.setBackgrounded(false)
-                self?.recorder.enforceDurationLimitIfNeeded()
-                self?.recorder.appendRaw(.info, "=== app → foreground ===")
+                guard let self else { return }
+                self.appState = "foreground"
+                self.snapshot = self.liveTelemetry.latest
+                self.client?.setBackgrounded(false)
+                self.evaluateAutoRecordTick()
+                self.recorder.enforceDurationLimitIfNeeded()
+                let recordingCSV = self.recorder.isRecording && self.recorder.format == .csv
+                if recordingCSV && !self.location.isActive {
+                    self.location.start()
+                }
+                self.startAutoConnectIfNeeded()
+                self.recorder.appendRaw(.info, "=== app → foreground ===")
             }
             .store(in: &cancellables)
         #endif
@@ -445,6 +685,8 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
             pairingTimeout = nil
             hasPairing = true
             pairingAttempt = .paired
+            autoConnectPolicy.didCompletePairing()
+            syncAutomationState()
         } catch {
             Task { @MainActor [weak self] in
                 guard let self, self.client === client else { return }
@@ -475,6 +717,17 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         }
         self.state = state
         setIdleTimerDisabled(state == .streaming)
+        if pendingPairing == nil {
+            if state == .streaming && autoConnectPolicy.shouldBeStandby {
+                client.passiveStandby = true
+            }
+            let commands = autoRecordCoordinator.bleStateChanged(
+                isStreaming: state == .streaming,
+                isRecording: recorder.isRecording,
+                at: Date()
+            )
+            executeAutoRecordCommands(commands)
+        }
     }
 
     func client(_ client: YConnectClient, didUpdate snapshot: TelemetrySnapshot) {

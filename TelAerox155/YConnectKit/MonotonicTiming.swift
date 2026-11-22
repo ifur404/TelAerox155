@@ -30,3 +30,27 @@ nonisolated struct InactivityDeadline {
         deadline.map { max(0, $0 - uptime) }
     }
 }
+
+/// Jeda bertahap untuk kegagalan transien (timeout auth/connect/stream atau
+/// `didFailToConnect`) agar mode siaga otomatis tidak melakukan retry rapat yang
+/// menguras baterai. Kembali ke 0 begitu koneksi berhasil mencapai streaming.
+nonisolated public struct ReconnectBackoff: Equatable, Sendable {
+    public static let defaultDelays: [TimeInterval] = [3, 10, 30, 60]
+
+    public private(set) var consecutiveFailures = 0
+    private let delays: [TimeInterval]
+
+    public init(delays: [TimeInterval] = Self.defaultDelays) {
+        self.delays = delays.isEmpty ? Self.defaultDelays : delays
+    }
+
+    public mutating func nextDelay() -> TimeInterval {
+        let index = min(consecutiveFailures, delays.count - 1)
+        consecutiveFailures += 1
+        return delays[index]
+    }
+
+    public mutating func reset() {
+        consecutiveFailures = 0
+    }
+}

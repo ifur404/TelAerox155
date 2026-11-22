@@ -36,8 +36,13 @@ tetap dapat dibuka. Data yang tidak ada pada rekaman lama tidak ditampilkan seba
 
 ## Rekaman saat layar terkunci
 
-Mulai rekaman ketika aplikasi masih terbuka. Untuk setiap rekaman CSV, GPS dimulai secara
-sinkron setelah file dan header siap; tidak menunggu tick timer atau antrean UI berikutnya.
+Mulai rekaman ketika aplikasi masih terbuka, atau aktifkan **Hubungkan otomatis** dan **Rekam perjalanan otomatis** (keduanya nonaktif secara default).
+
+- **Hubungkan otomatis** memakai `retrievePeripherals(withIdentifiers:)` dan permintaan pending `central.connect` CoreBluetooth tanpa memindai BLE terus-menerus, serta inisialisasi `CBCentralManager` sejak peluncuran aplikasi agar *State Restoration* dapat membangunkan app saat motor menyala. Menekan **Putuskan** / **Jeda** secara manual akan menjeda mode otomatis sementara hingga pengguna menekan **Hubungkan** lagi.
+- **Rekam perjalanan otomatis** memulai rekaman **Perjalanan (CSV)** saat motor mencapai status `streaming` (mengikuti preferensi *Gerakan & barometer* dan *Posisi iPhone* terakhir), dan berhenti otomatis setelah motor terputus melewati jeda tunggu (*grace period* 1 / 2 / 5 menit, default 2 menit) sehingga GPS, akselerometer, barometer, dan timer langsung dimatikan. Menekan **Stop Rekam** manual tidak akan memicu mulai otomatis lagi pada sesi koneksi motor yang sama, dan rekaman yang dimulai manual tidak dihentikan otomatis.
+- **Batasan iOS:** Biarkan aplikasi di latar belakang (jangan di-*swipe kill* dari App Switcher agar restorasi BLE tetap aktif). Untuk merekam GPS secara otomatis ketika rekaman dimulai dari layar terkunci, iOS memerlukan izin lokasi **Selalu**; dengan izin **Saat Digunakan**, telemetri ECU motor tetap terekam penuh dari latar belakang sementara GPS mulai aktif saat aplikasi dibuka.
+
+Untuk setiap rekaman CSV, GPS dimulai secara sinkron setelah file dan header siap; tidak menunggu tick timer atau antrean UI berikutnya.
 Jika **Gerakan & barometer** dimatikan, sensor tersebut tidak dinyalakan dan kolomnya tidak disimpan.
 Kolom GPS dan status perangkat tetap ada. BLE mentah tetap hanya merekam frame Bluetooth.
 
