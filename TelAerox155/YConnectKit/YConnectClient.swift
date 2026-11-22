@@ -48,6 +48,7 @@ import CoreBluetooth
 // (armAuthWatchdog/armConnectWatchdog/armStreamWatchdog/keepAliveTimer).
 nonisolated public enum ClientState: Equatable {
     case poweredOff
+    case standby
     case scanning
     case connecting
     case authenticating
@@ -157,6 +158,26 @@ public final class YConnectClient: NSObject {
     /// dan mencegah disconnect callback nyoba nyambung ulang sendiri.
     private var userRequestedStop = false
 
+    /// Mode siaga pasif (hubungkan otomatis): hanya memakai `retrievePeripherals`
+    /// + pending `central.connect` milik CoreBluetooth, TIDAK pernah melakukan
+    /// `scanForPeripherals(withServices: nil)` yang boros baterai.
+    public var passiveStandby: Bool = false
+
+    /// true bila CCU menolak auth `0x5A` bahkan setelah fallback bonding —
+    /// error kredensial permanen, jangan retry otomatis agar tidak menguras baterai.
+    private var permanentAuthFailure = false
+
+    /// true bila pemutusan dipicu watchdog/timeout transien — reconnect berikutnya
+    /// memakai backoff bertahap agar tidak terjadi loop cepat saat CCU masih nyala.
+    private var transientFailureTriggeredDisconnect = false
+
+    /// Peripheral yang dipulihkan iOS lewat `willRestoreState` dalam kondisi
+    /// sudah `.connected`; discovery dijalankan setelah `central.state == .poweredOn`.
+    private var restoredConnectedPendingDiscovery = false
+
+    private var reconnectBackoff = ReconnectBackoff()
+    private var reconnectTimer: Timer?
+
     // MARK: - Keep-alive 0xA6
 
     private var keepAliveTimer: Timer?
@@ -184,11 +205,13 @@ public final class YConnectClient: NSObject {
                 decoder: TelemetryDecoder = TelemetryDecoder(),
                 queue: DispatchQueue? = nil,
                 targetPeripheralID: UUID? = nil,
-                restoresState: Bool = true) {
+                restoresState: Bool = true,
+                passiveStandby: Bool = false) {
         self.targetPeripheralID = targetPeripheralID
         self.lastKnownPeripheralID = targetPeripheralID
         self.credentials = credentials
         self.decoder = decoder
+        self.passiveStandby = passiveStandby
         super.init()
         // Restore identifier: kalau iOS mematikan app di background (tekanan
         // memori) selagi masih ada koneksi BLE aktif, sistem bisa membangunkan
@@ -204,18 +227,44 @@ public final class YConnectClient: NSObject {
     public func start() {
         guard central.state == .poweredOn else { return }
         userRequestedStop = false
+        permanentAuthFailure = false
+        transientFailureTriggeredDisconnect = false
+        cancelReconnectTimer()
+        if restoredConnectedPendingDiscovery, let p = peripheral, p.state == .connected {
+            restoredConnectedPendingDiscovery = false
+            onAuthStage?("state restoration siap — discover services…")
+            state = .connecting
+            armConnectWatchdog()
+            p.discoverServices([CBUUID(string: NUS.serviceString)])
+            return
+        }
+        restoredConnectedPendingDiscovery = false
         if let p = peripheral, p.state == .connected || p.state == .connecting {
             // Sudah tersambung/lagi proses nyambung (mis. baru dipulihkan lewat
             // willRestoreState) — jangan mulai scan/connect baru yang dobel.
+            if p.state == .connecting && passiveStandby && state != .standby {
+                state = .standby
+            }
             return
         }
         if let savedID = lastKnownPeripheralID,
            let known = central.retrievePeripherals(withIdentifiers: [savedID]).first {
             // Nyambung ulang pakai identifier tersimpan, TANPA scan — penting
             // karena scan tanpa filter service UUID (lihat komentar di bawah)
-            // tidak menghasilkan apa pun kalau app sedang di background.
-            onAuthStage?("radio nyala lagi — coba sambung ulang ke CCU tersimpan tanpa scan")
+            // tidak menghasilkan apa pun kalau app sedang di background dan
+            // jauh lebih boros baterai dibanding pending `central.connect`.
+            onAuthStage?(passiveStandby
+                ? "siaga otomatis — menunggu CCU tersimpan tanpa scan"
+                : "radio nyala lagi — coba sambung ulang ke CCU tersimpan tanpa scan")
             connect(to: known)
+            return
+        }
+        if passiveStandby {
+            // Mode siaga otomatis TIDAK BOLEH jatuh ke scan tanpa filter UUID
+            // karena boros baterai dan tidak jalan di background.
+            let label = "Motor belum dikenali ulang oleh iOS. Tekan Hubungkan sekali saat dekat motor."
+            onAuthStage?("siaga otomatis: peripheral tersimpan tidak ada di cache iOS — scan dilewati")
+            state = .failed(label)
             return
         }
         state = .scanning
@@ -237,15 +286,42 @@ public final class YConnectClient: NSObject {
     /// diinginkan. Watchdog baru dipasang di `didConnect()`, membatasi fase
     /// discover→subscribe SETELAH benar-benar tersambung secara fisik.
     private func connect(to p: CBPeripheral) {
+        cancelReconnectTimer()
         snapshot = TelemetrySnapshot()
         peripheral = p
         lastKnownPeripheralID = p.identifier
-        state = .connecting
+        state = passiveStandby ? .standby : .connecting
         central.connect(p, options: nil)
+    }
+
+    private func scheduleBackoffReconnect(to p: CBPeripheral, reason: String) {
+        cancelReconnectTimer()
+        let delay = reconnectBackoff.nextDelay()
+        onAuthStage?("kegagalan sementara (\(reason)) — coba siaga lagi dalam \(Int(delay)) dt")
+        state = passiveStandby ? .standby : .connecting
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+            guard let self, !self.userRequestedStop, !self.permanentAuthFailure else { return }
+            self.reconnectTimer = nil
+            guard self.central.state == .poweredOn else { return }
+            self.didTryBondingFallback = false
+            self.connect(to: p)
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        reconnectTimer = timer
+    }
+
+    private func cancelReconnectTimer() {
+        reconnectTimer?.invalidate()
+        reconnectTimer = nil
     }
 
     public func stop() {
         userRequestedStop = true
+        permanentAuthFailure = false
+        transientFailureTriggeredDisconnect = false
+        restoredConnectedPendingDiscovery = false
+        reconnectBackoff.reset()
+        cancelReconnectTimer()
         disarmAuthWatchdog()
         disarmConnectWatchdog()
         disarmStreamWatchdog()
@@ -294,8 +370,12 @@ public final class YConnectClient: NSObject {
             self.disarmAuthWatchdog()
             if self.state == .authenticating {
                 self.onAuthStage?(label)
-                self.state = .failed(label)
-                self.delegate?.client(self, didFailWith: AuthTimeout())
+                self.transientFailureTriggeredDisconnect = true
+                if !self.passiveStandby {
+                    self.state = .failed(label)
+                    self.delegate?.client(self, didFailWith: AuthTimeout())
+                }
+                if let p = self.peripheral { self.central.cancelPeripheralConnection(p) }
             } else {
                 self.onAuthStage?("watchdog auth kepicu telat (state=\(self.state)) → diabaikan")
             }
@@ -318,7 +398,10 @@ public final class YConnectClient: NSObject {
             switch self.state {
             case .connecting:
                 self.onAuthStage?(label)
-                self.state = .failed(label)
+                self.transientFailureTriggeredDisconnect = true
+                if !self.passiveStandby {
+                    self.state = .failed(label)
+                }
                 if let p = self.peripheral { self.central.cancelPeripheralConnection(p) }
             default:
                 break
@@ -349,7 +432,10 @@ public final class YConnectClient: NSObject {
             } else {
                 let label = "stream berhenti — nggak ada frame valid \(Int(self.streamWatchdogSeconds)) dt"
                 self.onAuthStage?(label)
-                self.state = .failed(label)
+                self.transientFailureTriggeredDisconnect = true
+                if !self.passiveStandby {
+                    self.state = .failed(label)
+                }
                 if let p = self.peripheral { self.central.cancelPeripheralConnection(p) }
             }
         }
@@ -443,6 +529,9 @@ public final class YConnectClient: NSObject {
             }
             if sp.accepted {
                 onAuthStage?("terima 0x5A ACCEPTED (flag=\(sp.flag)) → streaming")
+                reconnectBackoff.reset()
+                transientFailureTriggeredDisconnect = false
+                permanentAuthFailure = false
                 state = .streaming
                 armStreamWatchdog()
                 startKeepAlive()
@@ -453,7 +542,9 @@ public final class YConnectClient: NSObject {
                 sendAuth(bonded: nextBonded)
             } else {
                 onAuthStage?("terima 0x5A DITOLAK (flag=\(sp.flag)), fallback udah kepake → nyerah")
+                permanentAuthFailure = true
                 state = .failed("auth ditolak CCU (flag=\(sp.flag))")
+                if let p = peripheral { central.cancelPeripheralConnection(p) }
             }
             return
         }
@@ -542,6 +633,7 @@ extension YConnectClient: CBCentralManagerDelegate {
             // balik .poweredOn, start() otomatis nyoba nyambung ulang lagi
             // lewat lastKnownPeripheralID (peripheral & identifier SENGAJA
             // tidak dibuang di sini).
+            cancelReconnectTimer()
             disarmAuthWatchdog()
             disarmConnectWatchdog()
             disarmStreamWatchdog()
@@ -570,12 +662,20 @@ extension YConnectClient: CBCentralManagerDelegate {
         rxChar = nil
         if p.state == .connected {
             // iOS sudah nyambung ulang secara fisik SEBELUM app hidup lagi —
-            // jangan asumsikan services/characteristics lama masih valid,
-            // discover ulang dari nol lalu lanjut alur normal (subscribe →
-            // auth) lewat delegate method yang sudah ada.
+            // jangan asumsikan services/characteristics lama masih valid.
+            // Discovery dijalankan setelah central.state == .poweredOn (atau
+            // langsung di sini jika sudah poweredOn).
             state = .connecting
-            armConnectWatchdog()
-            p.discoverServices([CBUUID(string: NUS.serviceString)])
+            if central.state == .poweredOn {
+                restoredConnectedPendingDiscovery = false
+                armConnectWatchdog()
+                p.discoverServices([CBUUID(string: NUS.serviceString)])
+            } else {
+                restoredConnectedPendingDiscovery = true
+            }
+        } else if p.state == .connecting {
+            restoredConnectedPendingDiscovery = false
+            state = passiveStandby ? .standby : .connecting
         }
         // Kalau belum .connected, biarkan CoreBluetooth yang nyambungin ulang
         // sendiri — didConnect() bakal kepanggil normal begitu berhasil.
@@ -613,6 +713,7 @@ extension YConnectClient: CBCentralManagerDelegate {
         onAuthStage?("BLE connect OK — discover services…")
         // Watchdog fase discover→subscribe dipasang di sini (bukan sebelum
         // central.connect()) — lihat dokblok connect(to:).
+        state = .connecting
         armConnectWatchdog()
         peripheral.delegate = self
         peripheral.discoverServices([CBUUID(string: NUS.serviceString)])
@@ -621,7 +722,12 @@ extension YConnectClient: CBCentralManagerDelegate {
     public func centralManager(_ central: CBCentralManager,
                                didFailToConnect peripheral: CBPeripheral, error: Error?) {
         disarmConnectWatchdog()
-        state = .failed("gagal connect: \(describeCBError(error))")
+        let reason = describeCBError(error)
+        if !userRequestedStop && !permanentAuthFailure && passiveStandby {
+            scheduleBackoffReconnect(to: peripheral, reason: reason)
+        } else {
+            state = .failed("gagal connect: \(reason)")
+        }
     }
 
     public func centralManager(_ central: CBCentralManager,
@@ -633,24 +739,43 @@ extension YConnectClient: CBCentralManagerDelegate {
         let reason = describeCBError(error)
         txChar = nil; rxChar = nil
 
+        if userRequestedStop {
+            onAuthStage?("terputus: \(reason)")
+            state = .failed("terputus: \(reason)")
+            return
+        }
+
+        if permanentAuthFailure {
+            onAuthStage?("terputus setelah auth ditolak: \(reason) — berhenti otomatis")
+            return
+        }
+
+        if transientFailureTriggeredDisconnect {
+            transientFailureTriggeredDisconnect = false
+            if central.state == .poweredOn {
+                scheduleBackoffReconnect(to: peripheral, reason: reason)
+            } else {
+                state = passiveStandby ? .standby : .connecting
+            }
+            return
+        }
+
         // B6: auto-reconnect kalau bukan user yang menekan "Putuskan". CCU
         // tidak mengingat sesi lama — sambungan baru wajib mengulang discover
         // → subscribe → kirim 0xAA lagi (ditangani otomatis lewat alur normal).
-        if !userRequestedStop {
-            onAuthStage?("terputus: \(reason) → coba nyambung ulang…")
-            didTryBondingFallback = false
-            if central.state == .poweredOn {
-                connect(to: peripheral)
-            } else {
-                // Radio lagi mati/reset — jangan panggil central.connect()
-                // sekarang (bakal gagal diam2). Reconnect otomatis lanjut
-                // lewat centralManagerDidUpdateState begitu balik .poweredOn,
-                // pakai lastKnownPeripheralID (lihat start()).
-                state = .connecting
-            }
+        // Untuk putus normal (mis. kontak motor dimatikan), `central.connect()`
+        // langsung masuk pending pasif di daemon Bluetooth iOS tanpa CPU/scan.
+        onAuthStage?("terputus: \(reason) → \(passiveStandby ? "kembali siaga pasif…" : "coba nyambung ulang…")")
+        reconnectBackoff.reset()
+        didTryBondingFallback = false
+        if central.state == .poweredOn {
+            connect(to: peripheral)
         } else {
-            onAuthStage?("terputus: \(reason)")
-            state = .failed("terputus: \(reason)")
+            // Radio lagi mati/reset — jangan panggil central.connect()
+            // sekarang (bakal gagal diam2). Reconnect otomatis lanjut
+            // lewat centralManagerDidUpdateState begitu balik .poweredOn,
+            // pakai lastKnownPeripheralID (lihat start()).
+            state = passiveStandby ? .standby : .connecting
         }
     }
 

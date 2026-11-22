@@ -51,6 +51,12 @@ struct RecordingView: View {
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
 
+                Section {
+                    autoRecordCard
+                }
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 8, trailing: 16))
+
                 if let id = justSavedID, !recorder.isRecording,
                    let saved = library.sessions.first(where: { $0.id == id }) {
                     Section {
@@ -89,7 +95,7 @@ struct RecordingView: View {
             }
         }
         .confirmationDialog("Hentikan rekaman?", isPresented: $confirmStop, titleVisibility: .visible) {
-            Button("Stop & Simpan", role: .destructive) { recorder.stop() }
+            Button("Stop & Simpan", role: .destructive) { store.stopManualRecording() }
             Button("Lanjut Merekam", role: .cancel) {}
         } message: {
             Text("Data yang sudah terekam tetap tersimpan permanen di Riwayat.")
@@ -151,7 +157,11 @@ struct RecordingView: View {
             }
 
             Button {
-                if recorder.start(format: selectedFormat, includesMotionAndBarometer: includeMotionAndBarometer, placement: PhonePlacement(rawValue: placementRaw) ?? .unknown) == nil { startFailed = true }
+                if !store.startManualRecording(format: selectedFormat,
+                                               includesMotionAndBarometer: includeMotionAndBarometer,
+                                               placement: PhonePlacement(rawValue: placementRaw) ?? .unknown) {
+                    startFailed = true
+                }
             } label: {
                 Label("Mulai Rekam", systemImage: "record.circle.fill")
                     .font(.headline)
@@ -188,6 +198,39 @@ struct RecordingView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    private var autoRecordCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle(isOn: $store.autoRecordEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Rekam perjalanan otomatis")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                    Text("Mulai CSV saat motor terhubung dan berhenti otomatis saat motor mati.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .tint(accent)
+
+            if store.autoRecordEnabled {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Jeda berhenti otomatis saat terputus")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Picker("Jeda berhenti otomatis", selection: $store.autoStopGracePeriod) {
+                        ForEach(AutoStopGracePeriod.allCases) { period in
+                            Text(period.shortLabel).tag(period)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+                AutoRecordLocationHint(location: location, accent: accent)
+            }
+        }
+        .padding(16)
+        .background(RecordingPalette.card, in: RoundedRectangle(cornerRadius: 20))
     }
 
     // MARK: - Tersimpan
@@ -303,6 +346,14 @@ private struct RecordingLiveCard: View {
                     .font(.caption.weight(.heavy))
                     .tracking(1)
                     .foregroundStyle(RecordingPalette.red)
+                if store.isAutomaticRecording {
+                    Text("OTOMATIS")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(accent)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(accent.opacity(0.16), in: Capsule())
+                }
                 Spacer()
                 Label(recorder.format.title, systemImage: recorder.format.icon)
                     .font(.caption.weight(.medium))
@@ -326,7 +377,15 @@ private struct RecordingLiveCard: View {
                      color: store.isActive ? .green : .orange)
             }
 
-            if !store.isActive {
+            if let deadline = store.autoStopDeadline {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    let remaining = max(0, deadline.timeIntervalSince(context.date))
+                    Text("Motor terputus — berhenti otomatis dalam \(RecordingFormat.clock(remaining)), lalu GPS & sensor dimatikan.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else if !store.isActive {
                 Text(recorder.format == .csv
                      ? "Motor tidak terhubung — GPS tetap direkam sesuai izin; kolom motor kosong sampai tersambung lagi."
                      : "Motor tidak terhubung — belum ada frame masuk.")
@@ -820,6 +879,7 @@ struct RecordingDetailView: View {
 
 /// Mengamati recorder langsung agar status tidak menunggu pembaruan BLE.
 struct RecordingDock: View {
+    @ObservedObject var store: TelemetryStore
     @ObservedObject var recorder: SessionRecorder
     let action: () -> Void
 
@@ -831,16 +891,35 @@ struct RecordingDock: View {
                     .foregroundStyle(RecordingPalette.red)
                 VStack(alignment: .leading, spacing: 3) {
                     if recorder.isRecording, let startedAt = recorder.startedAt {
-                        HStack {
+                        HStack(spacing: 6) {
                             Text("Merekam")
                             Text(startedAt, style: .timer).monospacedDigit()
+                            if store.isAutomaticRecording {
+                                Text("Otomatis")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.white.opacity(0.9))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(.white.opacity(0.14), in: Capsule())
+                            }
                         }
                         .font(.headline)
-                        Text("\(recorder.lineCount.formatted()) \(recorder.format == .csv ? "baris" : "frame") tersimpan · Kelola rekaman")
-                            .font(.caption).foregroundStyle(.secondary)
+                        if let deadline = store.autoStopDeadline {
+                            TimelineView(.periodic(from: .now, by: 1)) { context in
+                                let remaining = max(0, deadline.timeIntervalSince(context.date))
+                                Text("Motor terputus · berhenti otomatis dalam \(RecordingFormat.clock(remaining))")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                            }
+                        } else {
+                            Text("\(recorder.lineCount.formatted()) \(recorder.format == .csv ? "baris" : "frame") tersimpan · Kelola rekaman")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     } else {
                         Text("Rekam perjalanan").font(.headline)
-                        Text("Mulai rekaman atau buka riwayat")
+                        Text(store.autoRecordEnabled
+                             ? "Rekam otomatis aktif · Ketuk untuk atur atau lihat riwayat"
+                             : "Mulai rekaman atau buka riwayat")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -858,6 +937,77 @@ struct RecordingDock: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(.ultraThinMaterial)
+    }
+}
+
+/// Catatan izin lokasi khusus untuk rekam otomatis di background: iOS hanya
+/// mengizinkan mulai GPS pertama kali dari background bila izin = "Selalu".
+struct AutoRecordLocationHint: View {
+    @ObservedObject var location: LocationProvider
+    let accent: Color
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: iconName)
+                .font(.caption)
+                .foregroundStyle(iconColor)
+                .padding(.top, 2)
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            if location.authorizationStatus == .notDetermined {
+                Button("Izinkan") {
+                    location.requestAuthorization()
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(accent)
+                .buttonStyle(.plain)
+            } else if location.authorizationStatus != .authorizedAlways {
+                Button("Pengaturan") {
+                    #if canImport(UIKit)
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                    #endif
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(accent)
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var iconName: String {
+        switch location.authorizationStatus {
+        case .denied, .restricted: return "location.slash.fill"
+        default: return "location.fill"
+        }
+    }
+
+    private var iconColor: Color {
+        switch location.authorizationStatus {
+        case .authorizedAlways: return .green
+        case .authorizedWhenInUse: return .orange
+        case .notDetermined: return accent
+        default: return .red
+        }
+    }
+
+    private var message: String {
+        switch location.authorizationStatus {
+        case .authorizedAlways:
+            return "Izin lokasi Selalu aktif — GPS dan ECU motor siap direkam otomatis saat layar terkunci."
+        case .authorizedWhenInUse:
+            return "Izin lokasi masih 'Saat Digunakan'. Ubah ke 'Selalu' agar GPS ikut terekam otomatis saat layar terkunci (data ECU motor tetap terekam)."
+        case .notDetermined:
+            return "Berikan izin lokasi 'Selalu' agar rute GPS ikut terekam otomatis saat mulai dari layar terkunci."
+        case .denied, .restricted:
+            return "Izin lokasi ditolak — rekaman otomatis hanya menyimpan data ECU motor."
+        @unknown default:
+            return ""
+        }
     }
 }
 
