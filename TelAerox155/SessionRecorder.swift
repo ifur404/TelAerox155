@@ -81,6 +81,10 @@ final class SessionRecorder: ObservableObject {
     /// Terisi kalau rekaman terakhir berhenti KARENA limit (bukan ditekan
     /// user) — ditampilkan sebagai pesan info di UI.
     @Published private(set) var stopReason: String?
+    /// Terisi kalau rekaman terakhir langsung dibuang (mis. terlalu singkat) —
+    /// ditampilkan sementara sebagai info di UI agar user tahu kenapa sesi
+    /// tidak masuk Riwayat.
+    @Published private(set) var lastDiscardedNotice: String?
     /// Dibekukan saat start agar perubahan posisi HP tidak mencampur satu sesi.
     private(set) var includesMotionAndBarometer = true
     private(set) var phonePlacement: PhonePlacement = .unknown
@@ -197,6 +201,7 @@ final class SessionRecorder: ObservableObject {
         self.lineCount = 0
         self.startedAt = Date()
         self.stopReason = nil
+        self.lastDiscardedNotice = nil
         self.includesMotionAndBarometer = includesMotionAndBarometer
         self.phonePlacement = placement
         self.isRecording = true
@@ -219,8 +224,35 @@ final class SessionRecorder: ObservableObject {
         publishProgress()
         isRecording = false
         stopReason = reason
+        lastDiscardedNotice = nil
         syncIndex(endedAt: Date())
         onRecordingChanged?(false)
+    }
+
+    /// Hentikan rekaman aktif lalu hapus file dan entrinya dari riwayat
+    /// (mis. karena rekaman terlalu singkat untuk disimpan).
+    func discard(reason: String) {
+        guard isRecording else { return }
+        let fileName = fileURL?.lastPathComponent
+        try? fileHandle?.close()
+        fileHandle = nil
+        totalBytesWritten = 0
+        totalLineCount = 0
+        bytesWritten = 0
+        lineCount = 0
+        fileURL = nil
+        startedAt = nil
+        stopReason = reason
+        lastDiscardedNotice = reason
+        isRecording = false
+        if let fileName {
+            library.delete(fileName: fileName)
+        }
+        onRecordingChanged?(false)
+    }
+
+    func clearDiscardedNotice() {
+        lastDiscardedNotice = nil
     }
 
     /// Simpan buffer dan indeks saat masuk background, tanpa menutup sesi.

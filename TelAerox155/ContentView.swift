@@ -350,6 +350,9 @@ struct ContentView: View {
                         .pickerStyle(.segmented)
                     }
                     AutoRecordLocationHint(location: store.location, accent: accent)
+                    Text("Potong saat diam: \(store.inactivityCutTimeout.shortLabel) · Buang singkat: \(store.minimumRecordingDuration.shortLabel) (atur di Rekam Sesi)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
             }
         }

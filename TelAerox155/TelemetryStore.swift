@@ -84,16 +84,47 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         }
     }
 
+    /// Batas waktu tanpa aktivitas berkendara sebelum rekaman CSV dipotong otomatis.
+    @Published var inactivityCutTimeout: InactivityCutTimeout = .fiveMinutes {
+        didSet {
+            guard !isBootstrappingAutomation, inactivityCutTimeout != oldValue else { return }
+            UserDefaults.standard.set(inactivityCutTimeout.rawValue, forKey: Self.inactivityCutKey)
+            if let command = autoRecordCoordinator.setInactivityTimeout(
+                inactivityCutTimeout, isRecording: recorder.isRecording, at: Date()
+            ) {
+                executeAutoRecordCommands([command])
+            } else {
+                syncAutomationState()
+            }
+        }
+    }
+
+    /// Durasi efektif minimal agar rekaman CSV disimpan ke riwayat (di bawahnya dihapus).
+    @Published var minimumRecordingDuration: MinimumRecordingDuration = .oneMinute {
+        didSet {
+            guard !isBootstrappingAutomation, minimumRecordingDuration != oldValue else { return }
+            UserDefaults.standard.set(minimumRecordingDuration.rawValue, forKey: Self.minimumRecordingKey)
+            autoRecordCoordinator.setMinimumDuration(minimumRecordingDuration)
+            syncAutomationState()
+        }
+    }
+
     @Published private(set) var recordingOwnership: RecordingOwnership = .none
     @Published private(set) var autoStopDeadline: Date?
+    @Published private(set) var autoStopReasonKind: AutoStopReasonKind?
+    @Published private(set) var isInIdlingStop: Bool = false
+    @Published private(set) var isWaitingForActivityToRestart: Bool = false
     @Published private(set) var isAutoConnectPaused: Bool = false
 
     private static let autoConnectKey = "autoConnectEnabled"
     private static let autoRecordKey = "autoRecordEnabled"
     private static let autoStopGraceKey = "autoStopGraceSeconds"
+    private static let inactivityCutKey = "inactivityCutSeconds"
+    private static let minimumRecordingKey = "minimumRecordingSeconds"
 
     private var autoConnectPolicy = AutoConnectPolicy()
     private var autoRecordCoordinator = AutoRecordCoordinator()
+    private var activityTracker = RideActivityTracker()
     private var isBootstrappingAutomation = false
     private var isHandlingRecorderStopInternally = false
 
@@ -149,11 +180,22 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         let savedAutoRecord = defaults.bool(forKey: Self.autoRecordKey)
         let savedGraceRaw = defaults.object(forKey: Self.autoStopGraceKey) as? Int
         let savedGrace = AutoStopGracePeriod.from(rawSeconds: savedGraceRaw ?? AutoStopGracePeriod.twoMinutes.rawValue)
+        let savedInactivityRaw = defaults.object(forKey: Self.inactivityCutKey) as? Int
+        let savedInactivity = InactivityCutTimeout.from(rawSeconds: savedInactivityRaw ?? InactivityCutTimeout.fiveMinutes.rawValue)
+        let savedMinDurationRaw = defaults.object(forKey: Self.minimumRecordingKey) as? Int
+        let savedMinDuration = MinimumRecordingDuration.from(rawSeconds: savedMinDurationRaw ?? MinimumRecordingDuration.oneMinute.rawValue)
         autoConnectEnabled = savedAutoConnect
         autoRecordEnabled = savedAutoRecord
         autoStopGracePeriod = savedGrace
+        inactivityCutTimeout = savedInactivity
+        minimumRecordingDuration = savedMinDuration
         autoConnectPolicy = AutoConnectPolicy(isEnabled: savedAutoConnect, hasPairing: hasPairing)
-        autoRecordCoordinator = AutoRecordCoordinator(isEnabled: savedAutoRecord, gracePeriod: savedGrace)
+        autoRecordCoordinator = AutoRecordCoordinator(
+            isEnabled: savedAutoRecord,
+            gracePeriod: savedGrace,
+            inactivityTimeout: savedInactivity,
+            minimumDuration: savedMinDuration
+        )
         isBootstrappingAutomation = false
         syncAutomationState()
 
@@ -260,35 +302,58 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         }
     }
 
-    private func syncAutomationState() {
+    private func syncAutomationState(at now: Date = Date()) {
+        let visible = recorder.isRecording ? autoRecordCoordinator.visibleAutoStopCountdown(at: now) : nil
         isAutoConnectPaused = autoConnectPolicy.mode == .paused
         recordingOwnership = recorder.isRecording ? autoRecordCoordinator.ownership : .none
-        autoStopDeadline = recorder.isRecording ? autoRecordCoordinator.autoStopDeadline : nil
+        autoStopDeadline = visible?.deadline
+        autoStopReasonKind = visible?.kind
+        isInIdlingStop = recorder.isRecording && autoRecordCoordinator.isInIdlingStop
+        isWaitingForActivityToRestart = !recorder.isRecording && autoRecordCoordinator.waitingForActivityToRestart
+    }
+
+    /// True jika rekaman CSV aktif masih berada di bawah batas durasi minimal
+    /// (dipakai dialog Stop manual untuk menawarkan "Stop & Buang").
+    func isCurrentRecordingTooShort(at now: Date = Date()) -> Bool {
+        guard recorder.isRecording, recorder.format == .csv else { return false }
+        return autoRecordCoordinator.shouldDiscard(for: nil, at: now)
     }
 
     /// Mulai rekaman manual dari tombol UI — ditandai manual agar tidak
-    /// dihentikan oleh mekanisme auto-stop.
+    /// dihentikan oleh jeda putus BLE (namun CSV tetap bisa dipotong bila
+    /// tidak ada aktivitas sesuai pengaturan).
     @discardableResult
     func startManualRecording(format: SessionRecorder.Format,
                               includesMotionAndBarometer: Bool,
                               placement: PhonePlacement) -> Bool {
+        activityTracker.reset()
         let url = recorder.start(format: format,
                                  includesMotionAndBarometer: includesMotionAndBarometer,
                                  placement: placement)
         guard url != nil else { return false }
-        autoRecordCoordinator.userStartedManualRecording()
-        syncAutomationState()
+        let startTime = recorder.startedAt ?? Date()
+        autoRecordCoordinator.userStartedManualRecording(supportsActivityCut: format == .csv, at: startTime)
+        evaluateRecordingActivity(at: startTime)
         return true
     }
 
     /// Hentikan rekaman secara manual dari tombol UI — menahan auto-start ulang
     /// selama sesi koneksi motor yang sama.
-    func stopManualRecording() {
+    func stopManualRecording(allowDiscardIfTooShort: Bool = false) {
+        let now = Date()
         isHandlingRecorderStopInternally = true
-        autoRecordCoordinator.userStoppedRecording()
-        recorder.stop()
+        let discardReason = autoRecordCoordinator.userStoppedRecording(
+            allowDiscardIfTooShort: allowDiscardIfTooShort,
+            at: now
+        )
+        if let discardReason {
+            recorder.discard(reason: discardReason)
+        } else {
+            recorder.stop()
+        }
+        activityTracker.reset()
         isHandlingRecorderStopInternally = false
-        syncAutomationState()
+        syncAutomationState(at: now)
     }
 
     private func executeAutoRecordCommands(_ commands: [AutoRecordCommand]) {
@@ -297,8 +362,15 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
             case .stopAutomaticRecording(let reason):
                 isHandlingRecorderStopInternally = true
                 recorder.stop(reason: reason)
+                activityTracker.reset()
+                isHandlingRecorderStopInternally = false
+            case .discardAutomaticRecording(let reason):
+                isHandlingRecorderStopInternally = true
+                recorder.discard(reason: reason)
+                activityTracker.reset()
                 isHandlingRecorderStopInternally = false
             case .startAutomaticRecording:
+                activityTracker.reset()
                 let defaults = UserDefaults.standard
                 let includeSensors = defaults.object(forKey: "recordPhoneSensors") as? Bool ?? true
                 let placementRaw = defaults.string(forKey: "phonePlacement") ?? PhonePlacement.unknown.rawValue
@@ -318,7 +390,60 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         if let command = autoRecordCoordinator.tick(isRecording: recorder.isRecording, at: now) {
             executeAutoRecordCommands([command])
         } else {
-            syncAutomationState()
+            syncAutomationState(at: now)
+        }
+    }
+
+    private func currentActivityInput(at now: Date) -> RideActivityInput {
+        var input = RideActivityInput(isBLEStreaming: isActive)
+        if isActive {
+            let snap = liveTelemetry.latest
+            if let battAge = snap.receivedAt["battery"].map({ now.timeIntervalSince($0) }),
+               battAge >= -1, battAge <= 5,
+               let batt = snap.value("battery"), batt < 5 {
+                input.ecuKeyOff = true
+            }
+            if let speedAge = snap.receivedAt["speed"].map({ now.timeIntervalSince($0) }),
+               speedAge >= -1, speedAge <= 5 {
+                input.ecuSpeedKmh = snap.value("speed")
+            }
+            if let rpmAge = snap.receivedAt["rpm"].map({ now.timeIntervalSince($0) }),
+               rpmAge >= -1, rpmAge <= 5 {
+                input.ecuRPM = snap.value("rpm")
+            }
+            if let thrAge = snap.receivedAt["throttle"].map({ now.timeIntervalSince($0) }),
+               thrAge >= -1, thrAge <= 5 {
+                input.ecuThrottleDeg = snap.value("throttle")
+            }
+        }
+        if let loc = location.lastLocation {
+            let age = now.timeIntervalSince(loc.timestamp)
+            if age >= -1, age <= 5, loc.horizontalAccuracy >= 0 {
+                input.gpsHorizontalAccuracy = loc.horizontalAccuracy
+                input.gpsLatitude = loc.coordinate.latitude
+                input.gpsLongitude = loc.coordinate.longitude
+                if loc.speed >= 0, loc.speed.isFinite {
+                    input.gpsSpeedKmh = loc.speed * 3.6
+                }
+            }
+        }
+        return input
+    }
+
+    /// Evaluasi aktivitas berkendara (ECU + GPS) untuk memotong rekaman diam
+    /// secara otomatis, melindungi Idling Stop (SSS), dan memulai segmen baru
+    /// saat motor kembali bergerak.
+    private func evaluateRecordingActivity(at now: Date = Date()) {
+        guard recorder.isRecording || autoRecordCoordinator.waitingForActivityToRestart else { return }
+        let status = activityTracker.evaluate(currentActivityInput(at: now))
+        if let command = autoRecordCoordinator.processActivity(
+            status,
+            isRecording: recorder.isRecording,
+            at: now
+        ) {
+            executeAutoRecordCommands([command])
+        } else {
+            syncAutomationState(at: now)
         }
     }
 
@@ -528,9 +653,9 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
                 self.recordingTimer = nil
                 // Dicek tiap detik TERLEPAS dari state BLE/apakah ada baris
                 // baru ditulis — supaya rekaman yang idle lama (disconnect
-                // manual atau auto-reconnect berkepanjangan) tetap kena batas
-                // durasi & jeda tunggu auto-stop otomatis.
-                self.evaluateAutoRecordTick()
+                // manual, motor diam lama, atau auto-reconnect berkepanjangan)
+                // tetap kena batas durasi, potong diam, & jeda tunggu otomatis.
+                self.evaluateRecordingActivity()
                 if self.recorder.isRecording {
                     if self.recorder.format == .csv {
                         self.sampleCSVIfDue()
@@ -564,7 +689,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     ///   walau dipicu dari dua tempat.
     private func sampleCSVIfDue() {
         guard recorder.isRecording, recorder.format == .csv else { return }
-        evaluateAutoRecordTick()
+        evaluateRecordingActivity()
         guard recorder.isRecording, recorder.format == .csv else { return }
         guard csvThrottle.consume(at: ProcessInfo.processInfo.systemUptime) else { return }
         recorder.enforceDurationLimitIfNeeded()
@@ -655,6 +780,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         let triggers: [AnyPublisher<Void, Never>] = [
             $state.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             $autoStopDeadline.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $autoStopReasonKind.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             $recordingOwnership.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             recorder.$isRecording.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             recorder.$lineCount.dropFirst().map { _ in () }.eraseToAnyPublisher(),
@@ -688,6 +814,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
             recordingFormat: recorder.format,
             isAutomaticRecording: isAutomaticRecording,
             autoStopDeadline: autoStopDeadline,
+            autoStopIsInactivity: autoStopReasonKind == .inactivity,
             lineCount: recorder.lineCount,
             isNavigating: navigation.phase == .navigating,
             hasArrived: navigation.phase == .arrived,
@@ -809,6 +936,9 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
                                                isForeground: appState == "foreground") {
             self.snapshot = display
         }
+        // Deteksi aktivitas berjalan walau rekaman sedang siaga pasca-potong
+        // diam agar segmen rekaman otomatis baru langsung mulai saat bergerak.
+        evaluateRecordingActivity()
         // Lihat dokblok sampleCSVIfDue(): notifikasi BLE ini yang menjaga
         // rekaman CSV tetap jalan di background walau timer 1 Hz telat/mati.
         sampleCSVIfDue()

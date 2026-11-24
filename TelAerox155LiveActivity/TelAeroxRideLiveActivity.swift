@@ -360,7 +360,7 @@ private struct ExpandedBottomView: View {
                     HStack(spacing: 5) {
                         Image(systemName: "timer")
                             .font(.caption2)
-                        Text("Berhenti otomatis dalam")
+                        Text(state.autoStopIsInactivity ? "Potong otomatis dalam" : "Berhenti otomatis dalam")
                             .font(.caption2)
                         Text(timerInterval: Date.now...max(Date.now, deadline), countsDown: true)
                             .font(.caption2.weight(.bold).monospacedDigit())
@@ -412,7 +412,9 @@ private struct LockScreenRideView: View {
                     HStack(spacing: 6) {
                         Image(systemName: "exclamationmark.circle.fill")
                             .font(.caption)
-                        Text("Motor terputus · berhenti otomatis dalam")
+                        Text(state.autoStopIsInactivity
+                             ? "Tidak ada aktivitas · potong otomatis dalam"
+                             : "Motor terputus · berhenti otomatis dalam")
                             .font(.caption2)
                         Text(timerInterval: Date.now...max(Date.now, deadline), countsDown: true)
                             .font(.caption2.weight(.bold).monospacedDigit())

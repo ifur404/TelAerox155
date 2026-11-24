@@ -149,15 +149,20 @@ final class RecordingLibrary: ObservableObject {
         saveIndex()
     }
 
-    /// Hapus file + entrinya. Satu-satunya jalan sesi hilang dari daftar
-    /// (selain dihapus manual lewat app Files) — dan UI selalu minta
-    /// konfirmasi dulu.
-    func delete(_ session: RecordingSession) {
-        if let url = url(for: session) {
+    /// Hapus file + entrinya berdasarkan nama file.
+    func delete(fileName: String) {
+        if let url = documentsDirectory?.appendingPathComponent(fileName) {
             try? fm.removeItem(at: url)
         }
-        sessions.removeAll { $0.id == session.id }
+        sessions.removeAll { $0.fileName == fileName }
         saveIndex()
+    }
+
+    /// Hapus file + entrinya. Satu-satunya jalan sesi hilang dari daftar
+    /// (selain dihapus manual lewat app Files) — dan UI selalu minta
+    /// konfirmasi dulu (kecuali pembuangan otomatis rekaman terlalu singkat).
+    func delete(_ session: RecordingSession) {
+        delete(fileName: session.fileName)
     }
 
     // MARK: - Persistensi indeks

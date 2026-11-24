@@ -15,6 +15,7 @@ nonisolated enum RideLiveActivitySnapshotBuilder {
         var recordingFormat: SessionRecorder.Format
         var isAutomaticRecording: Bool
         var autoStopDeadline: Date?
+        var autoStopIsInactivity: Bool = false
         var lineCount: Int
 
         var isNavigating: Bool
@@ -94,6 +95,7 @@ nonisolated enum RideLiveActivitySnapshotBuilder {
             recordingFormatLabel: input.recordingFormat == .csv ? "CSV" : "RAW",
             isAutomaticRecording: input.isRecording && input.isAutomaticRecording,
             autoStopDeadline: input.isRecording ? input.autoStopDeadline : nil,
+            autoStopIsInactivity: input.isRecording && input.autoStopDeadline != nil && input.autoStopIsInactivity,
             lineCount: input.isRecording ? input.lineCount : 0,
             isNavigating: navActive,
             hasArrived: input.hasArrived,

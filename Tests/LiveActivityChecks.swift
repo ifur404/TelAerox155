@@ -209,5 +209,12 @@ struct LiveActivityChecks {
         startedNav.nextInstruction = "Belok kanan"
         let s4 = RideLiveActivitySnapshotBuilder.build(startedNav)!
         expect(s4.isUrgentTransition(from: s1), "mode switch to navigatingAndRecording should be urgent")
+
+        var inactivityCountdown = input
+        inactivityCountdown.autoStopDeadline = now.addingTimeInterval(240)
+        inactivityCountdown.autoStopIsInactivity = true
+        let s5 = RideLiveActivitySnapshotBuilder.build(inactivityCountdown)!
+        expect(s5.autoStopIsInactivity && s5.isUrgentTransition(from: s1),
+               "inactivity countdown transition should be urgent and flagged")
     }
 }

@@ -64,6 +64,12 @@ struct RecordingView: View {
                     }
                     .listRowBackground(Color.clear)
                     .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 8, trailing: 16))
+                } else if !recorder.isRecording, let notice = recorder.lastDiscardedNotice {
+                    Section {
+                        discardedCard(notice)
+                    }
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 8, trailing: 16))
                 }
 
                 historySection
@@ -95,10 +101,24 @@ struct RecordingView: View {
             }
         }
         .confirmationDialog("Hentikan rekaman?", isPresented: $confirmStop, titleVisibility: .visible) {
-            Button("Stop & Simpan", role: .destructive) { store.stopManualRecording() }
-            Button("Lanjut Merekam", role: .cancel) {}
+            if store.isCurrentRecordingTooShort() {
+                Button("Stop & Buang", role: .destructive) {
+                    store.stopManualRecording(allowDiscardIfTooShort: true)
+                }
+                Button("Tetap Simpan") {
+                    store.stopManualRecording(allowDiscardIfTooShort: false)
+                }
+                Button("Lanjut Merekam", role: .cancel) {}
+            } else {
+                Button("Stop & Simpan", role: .destructive) { store.stopManualRecording() }
+                Button("Lanjut Merekam", role: .cancel) {}
+            }
         } message: {
-            Text("Data yang sudah terekam tetap tersimpan permanen di Riwayat.")
+            if store.isCurrentRecordingTooShort() {
+                Text("Rekaman masih di bawah batas minimal \(store.minimumRecordingDuration.detailLabel). Pilih Stop & Buang agar tidak memenuhi Riwayat.")
+            } else {
+                Text("Data yang sudah terekam tetap tersimpan permanen di Riwayat.")
+            }
         }
         .confirmationDialog("Hapus rekaman ini?",
                             isPresented: Binding(get: { pendingDelete != nil },
@@ -228,9 +248,71 @@ struct RecordingView: View {
                 }
                 AutoRecordLocationHint(location: location, accent: accent)
             }
+
+            Divider().overlay(.white.opacity(0.08))
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Potong otomatis saat tanpa aktivitas")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Picker("Potong otomatis saat tanpa aktivitas", selection: $store.inactivityCutTimeout) {
+                    ForEach(InactivityCutTimeout.allCases) { timeout in
+                        Text(timeout.shortLabel).tag(timeout)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text("Memotong rekaman Perjalanan (CSV) otomatis jika motor diam lama. Idling Stop (SSS) saat berhenti di jalan otomatis ditahan (batas pengaman 15 mnt) agar tidak terpotong. Pada mode otomatis, rekaman baru mulai lagi saat bergerak.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Buang rekaman terlalu singkat")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Picker("Buang rekaman terlalu singkat", selection: $store.minimumRecordingDuration) {
+                    ForEach(MinimumRecordingDuration.allCases) { duration in
+                        Text(duration.shortLabel).tag(duration)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text("Hapus otomatis rekaman CSV yang durasi aktifnya di bawah batas ini agar Riwayat tidak penuh.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(16)
         .background(RecordingPalette.card, in: RoundedRectangle(cornerRadius: 20))
+    }
+
+    private func discardedCard(_ notice: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "trash.circle.fill")
+                .font(.title2)
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Rekaman tidak disimpan")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+            }
+            Spacer(minLength: 0)
+            Button {
+                recorder.clearDiscardedNotice()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(6)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Tutup pemberitahuan")
+        }
+        .padding(14)
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 16))
     }
 
     // MARK: - Tersimpan
@@ -380,11 +462,19 @@ private struct RecordingLiveCard: View {
             if let deadline = store.autoStopDeadline {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     let remaining = max(0, deadline.timeIntervalSince(context.date))
-                    Text("Motor terputus — berhenti otomatis dalam \(RecordingFormat.clock(remaining)), lalu GPS & sensor dimatikan.")
+                    Text(store.autoStopReasonKind == .inactivity
+                         ? "Tidak ada aktivitas — potong otomatis dalam \(RecordingFormat.clock(remaining)), lalu GPS & sensor dimatikan."
+                         : "Motor terputus — berhenti otomatis dalam \(RecordingFormat.clock(remaining)), lalu GPS & sensor dimatikan.")
                         .font(.caption)
                         .foregroundStyle(.orange)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+            } else if store.isInIdlingStop {
+                Label("Idling Stop (SSS) aktif — potong otomatis ditahan agar perjalanan tidak terpecah.",
+                      systemImage: "pause.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(accent)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             } else if !store.isActive {
                 Text(recorder.format == .csv
                      ? "Motor tidak terhubung — GPS tetap direkam sesuai izin; kolom motor kosong sampai tersambung lagi."
@@ -907,7 +997,9 @@ struct RecordingDock: View {
                         if let deadline = store.autoStopDeadline {
                             TimelineView(.periodic(from: .now, by: 1)) { context in
                                 let remaining = max(0, deadline.timeIntervalSince(context.date))
-                                Text("Motor terputus · berhenti otomatis dalam \(RecordingFormat.clock(remaining))")
+                                Text(store.autoStopReasonKind == .inactivity
+                                     ? "Tidak ada aktivitas · potong otomatis dalam \(RecordingFormat.clock(remaining))"
+                                     : "Motor terputus · berhenti otomatis dalam \(RecordingFormat.clock(remaining))")
                                     .font(.caption)
                                     .foregroundStyle(.orange)
                             }
@@ -917,9 +1009,11 @@ struct RecordingDock: View {
                         }
                     } else {
                         Text("Rekam perjalanan").font(.headline)
-                        Text(store.autoRecordEnabled
-                             ? "Rekam otomatis aktif · Ketuk untuk atur atau lihat riwayat"
-                             : "Mulai rekaman atau buka riwayat")
+                        Text(store.isWaitingForActivityToRestart
+                             ? "Rekam otomatis siaga · mulai lagi saat motor bergerak"
+                             : (store.autoRecordEnabled
+                                ? "Rekam otomatis aktif · Ketuk untuk atur atau lihat riwayat"
+                                : "Mulai rekaman atau buka riwayat"))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }

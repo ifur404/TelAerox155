@@ -27,6 +27,7 @@ nonisolated struct RideLiveActivityState: Codable, Hashable, Sendable {
     var recordingFormatLabel: String
     var isAutomaticRecording: Bool
     var autoStopDeadline: Date?
+    var autoStopIsInactivity: Bool = false
     var lineCount: Int
 
     // MARK: - Navigasi rute
@@ -116,6 +117,7 @@ nonisolated struct RideLiveActivityState: Codable, Hashable, Sendable {
             || recordingFormatLabel != previous.recordingFormatLabel
             || isAutomaticRecording != previous.isAutomaticRecording
             || autoStopDeadline != previous.autoStopDeadline
+            || autoStopIsInactivity != previous.autoStopIsInactivity
             || isNavigating != previous.isNavigating
             || hasArrived != previous.hasArrived
             || isRerouting != previous.isRerouting
