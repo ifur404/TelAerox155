@@ -120,6 +120,11 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
     /// tidak sedang merekam.
     let location = LocationProvider()
     let phoneSensors = PhoneSensorProvider()
+    /// Sesi navigasi turn-by-turn dimiliki store agar Live Activity / Dynamic
+    /// Island bisa memantau status rute & rekaman secara terpadu walau user
+    /// berpindah antar layar atau ke latar belakang.
+    let navigation = NavigationSession()
+    private let liveActivity = RideLiveActivityManager()
     private var appState = "foreground"
 
     private var recordingTimer: Timer?
@@ -153,8 +158,10 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         syncAutomationState()
 
         bindRecorderToLocation()
+        bindLiveActivity()
         observeAppLifecycle()
         startAutoConnectIfNeeded()
+        syncLiveActivity()
     }
 
     var isActive: Bool {
@@ -530,6 +537,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
                     } else {
                         self.recorder.enforceDurationLimitIfNeeded()
                     }
+                    self.syncLiveActivity()
                 }
                 if self.recorder.isRecording { self.startRecordingTimer() }
             }
@@ -610,6 +618,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
                 }
                 self.syncAutomationState()
             }
+            self.syncLiveActivity()
         }
 
         // Update lokasi juga membangunkan sampler saat background, termasuk
@@ -617,7 +626,10 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         location.$lastLocation
             .dropFirst()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.sampleCSVIfDue() }
+            .sink { [weak self] _ in
+                self?.sampleCSVIfDue()
+                self?.syncLiveActivity()
+            }
             .store(in: &cancellables)
 
         // Kalau start() dipanggil saat izin masih .notDetermined, itu cuma
@@ -634,6 +646,66 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
                 }
             }
             .store(in: &cancellables)
+    }
+
+    /// Sinkronkan Dynamic Island / Lock Screen Live Activity dengan status
+    /// rekaman, navigasi, dan telemetri terbaru (termasuk saat background lewat
+    /// `liveTelemetry.latest`).
+    private func bindLiveActivity() {
+        let triggers: [AnyPublisher<Void, Never>] = [
+            $state.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $autoStopDeadline.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $recordingOwnership.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            recorder.$isRecording.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            recorder.$lineCount.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            navigation.$phase.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            navigation.$nextInstruction.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            navigation.$nextManeuver.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            navigation.$distanceToManeuver.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            navigation.$remainingDistance.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            navigation.$remainingTime.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            navigation.$isRerouting.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            navigation.$rainOutlook.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            navigation.$destination.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            navigation.$location.dropFirst().map { _ in () }.eraseToAnyPublisher()
+        ]
+        Publishers.MergeMany(triggers)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in self?.syncLiveActivity() }
+            .store(in: &cancellables)
+    }
+
+    private func syncLiveActivity() {
+        let navLocation = navigation.isLiveActivityActive ? navigation.location : nil
+        let gpsLocation = navLocation ?? location.lastLocation
+        let rainWarning: String? = {
+            guard let rain = navigation.rainOutlook, rain.isRain else { return nil }
+            return rain.text(indonesian: true)
+        }()
+        let input = RideLiveActivitySnapshotBuilder.Input(
+            isRecording: recorder.isRecording,
+            recordingStartedAt: recorder.startedAt,
+            recordingFormat: recorder.format,
+            isAutomaticRecording: isAutomaticRecording,
+            autoStopDeadline: autoStopDeadline,
+            lineCount: recorder.lineCount,
+            isNavigating: navigation.phase == .navigating,
+            hasArrived: navigation.phase == .arrived,
+            isRerouting: navigation.isRerouting,
+            maneuver: navigation.nextManeuver,
+            distanceToManeuver: navigation.distanceToManeuver,
+            nextInstruction: navigation.nextInstruction,
+            destinationName: navigation.destinationName,
+            remainingDistance: navigation.remainingDistance,
+            remainingTime: navigation.remainingTime,
+            rainWarning: rainWarning,
+            snapshot: liveTelemetry.latest,
+            isMotorConnected: isActive,
+            gpsLocation: gpsLocation,
+            now: Date()
+        )
+        liveActivity.sync(state: RideLiveActivitySnapshotBuilder.build(input),
+                          isForeground: appState == "foreground")
     }
 
     /// Catat transisi background/foreground ke rekaman BLE mentah yang aktif
@@ -662,6 +734,7 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
                     self.location.start()
                 }
                 self.startAutoConnectIfNeeded()
+                self.syncLiveActivity()
                 self.recorder.appendRaw(.info, "=== app → foreground ===")
             }
             .store(in: &cancellables)
@@ -739,6 +812,9 @@ final class TelemetryStore: NSObject, ObservableObject, YConnectClientDelegate {
         // Lihat dokblok sampleCSVIfDue(): notifikasi BLE ini yang menjaga
         // rekaman CSV tetap jalan di background walau timer 1 Hz telat/mati.
         sampleCSVIfDue()
+        if recorder.isRecording || navigation.isLiveActivityActive {
+            syncLiveActivity()
+        }
     }
 
     func client(_ client: YConnectClient, didReceiveVIN vin: String) {

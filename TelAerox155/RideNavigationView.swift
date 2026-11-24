@@ -8,9 +8,9 @@ import Combine
 /// mengirim apa pun ke motor.
 struct RideNavigationView: View {
     @ObservedObject var store: TelemetryStore
+    @ObservedObject var nav: NavigationSession
     let accent: Color
 
-    @StateObject private var nav = NavigationSession()
     @State private var camera: MapCameraPosition = .userLocation(fallback: .automatic)
     /// Kamera navigasi mengikuti pengendara (dimatikan saat peta digeser jari).
     @State private var following = false
@@ -31,8 +31,15 @@ struct RideNavigationView: View {
         .safeAreaInset(edge: .top, spacing: 0) { topPanel.padding(.horizontal, 12).padding(.top, 4) }
         .safeAreaInset(edge: .bottom, spacing: 0) { bottomPanel.padding(.horizontal, 12).padding(.bottom, 4) }
         .preferredColorScheme(.dark)
-        .onAppear { nav.activate() }
-        .onDisappear { nav.deactivate() }
+        .onAppear {
+            nav.activate()
+            if nav.phase == .navigating {
+                followRider()
+            } else if nav.phase == .preview {
+                showWholeRoute()
+            }
+        }
+        .onDisappear { nav.viewDidDisappear() }
         .onChange(of: nav.phase) { _, phase in
             switch phase {
             case .preview: following = false; showWholeRoute()
@@ -381,10 +388,15 @@ struct RideNavigationView: View {
                     Label("Suara petunjuk", systemImage: "speaker.wave.2.fill")
                 }
             }
-            if nav.phase == .navigating, let url = googleMapsURL {
+            if nav.phase == .navigating {
                 Section {
-                    Button { openURL(url) } label: {
-                        Label("Buka di Google Maps", systemImage: "arrow.up.forward.app")
+                    Button { dismiss() } label: {
+                        Label("Kembali ke Dashboard", systemImage: "gauge.with.dots.needle.50percent")
+                    }
+                    if let url = googleMapsURL {
+                        Button { openURL(url) } label: {
+                            Label("Buka di Google Maps", systemImage: "arrow.up.forward.app")
+                        }
                     }
                 }
             }

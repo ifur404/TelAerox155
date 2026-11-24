@@ -72,6 +72,15 @@ final class NavigationSession: NSObject, ObservableObject, CLLocationManagerDele
     /// Prakiraan hujan di sepanjang rute (Open-Meteo). nil = belum ada data.
     @Published private(set) var rainOutlook: RainOutlook?
 
+    /// true saat rute sedang berjalan atau baru tiba (tampil di Dynamic Island).
+    var isLiveActivityActive: Bool {
+        phase == .navigating || phase == .arrived
+    }
+
+    var destinationName: String? {
+        destination?.name
+    }
+
     // MARK: Internal
 
     private let manager = CLLocationManager()
@@ -130,8 +139,19 @@ final class NavigationSession: NSObject, ObservableObject, CLLocationManagerDele
         applyPowerProfile()
     }
 
-    /// Dipanggil saat layar navigasi ditutup: GPS dan suara dihentikan supaya
-    /// baterai tidak terkuras di belakang layar.
+    /// Dipanggil saat layar navigasi ditutup: jika rute sedang aktif berjalan,
+    /// biarkan GPS/suara/Dynamic Island tetap lanjut sampai user menekan
+    /// Selesai; jika sedang idle/pratinjau, hentikan GPS demi hemat baterai.
+    func viewDidDisappear() {
+        if phase == .navigating {
+            isPresented = false
+            setScreenAwake(false)
+            return
+        }
+        deactivate()
+    }
+
+    /// Hentikan GPS dan suara sepenuhnya supaya baterai tidak terkuras.
     func deactivate() {
         isPresented = false
         routeTask?.cancel()

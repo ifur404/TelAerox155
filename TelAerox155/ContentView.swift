@@ -61,7 +61,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showPairing) { PairingView(store: store) }
         .fullScreenCover(isPresented: $showNavigation) {
-            RideNavigationView(store: store, accent: accent)
+            RideNavigationView(store: store, nav: store.navigation, accent: accent)
         }
         .sheet(isPresented: $showRecordSheet) {
             RecordingView(store: store, recorder: store.recorder, library: store.recorder.library,
@@ -72,6 +72,24 @@ struct ContentView: View {
             set: { selectedSensorKey = $0?.key }
         )) { item in
             SensorInfoSheet(key: item.key, accent: accent)
+        }
+        .onOpenURL { url in
+            guard url.scheme?.lowercased() == "telaerox" else { return }
+            switch url.host?.lowercased() {
+            case "navigation":
+                showRecordSheet = false
+                showPairing = false
+                selectedSensorKey = nil
+                showNavigation = true
+            case "recording":
+                if !showNavigation {
+                    showPairing = false
+                    selectedSensorKey = nil
+                    showRecordSheet = true
+                }
+            default:
+                break
+            }
         }
     }
 
@@ -89,11 +107,9 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button { showNavigation = true } label: {
-                    Image(systemName: "map.fill").font(.title3)
+                NavigationHeaderButton(nav: store.navigation, accent: accent) {
+                    showNavigation = true
                 }
-                .accessibilityLabel("Navigasi")
-                .frame(width: 44, height: 44)
                 Button { showPairing = true } label: {
                     Image(systemName: "qrcode").font(.title3)
                 }
@@ -795,6 +811,33 @@ struct MetricValue: Identifiable {
     let valueText: String
     let unit: String
     var color: Color = .white
+}
+
+/// Tombol peta di header yang menampilkan titik aktif bila rute sedang berjalan
+/// di latar belakang (terpisah supaya pembaruan GPS tidak me-render ulang seluruh
+/// dashboard `ContentView`).
+private struct NavigationHeaderButton: View {
+    @ObservedObject var nav: NavigationSession
+    let accent: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: "map.fill")
+                    .font(.title3)
+                    .foregroundStyle(nav.isLiveActivityActive ? accent : .primary)
+                if nav.isLiveActivityActive {
+                    Circle()
+                        .fill(nav.phase == .arrived ? Color.green : accent)
+                        .frame(width: 8, height: 8)
+                        .offset(x: 4, y: -3)
+                }
+            }
+            .frame(width: 44, height: 44)
+        }
+        .accessibilityLabel(nav.isLiveActivityActive ? "Navigasi aktif" : "Navigasi")
+    }
 }
 
 #Preview {

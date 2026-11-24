@@ -31,5 +31,25 @@
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<!-- Live Activities / Dynamic Island untuk rekaman & navigasi aktif. -->
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
+	<true/>
+	<!-- Deep link dari Dynamic Island / Lock Screen Live Activity ke layar
+	     navigasi atau rekaman. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.rupi.TelAerox155</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>telaerox</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

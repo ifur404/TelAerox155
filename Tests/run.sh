@@ -35,4 +35,16 @@ xcrun swiftc -parse-as-library -default-isolation MainActor -module-cache-path "
   Tests/AutomationChecks.swift -o "$check_dir/automation-checks"
 "$check_dir/automation-checks"
 
+xcrun swiftc -parse-as-library -default-isolation MainActor -module-cache-path "$check_dir/modules" \
+  Shared/RideLiveActivityAttributes.swift TelAerox155/RideLiveActivityManager.swift \
+  TelAerox155/HomeTelemetry.swift TelAerox155/RouteProgress.swift \
+  TelAerox155/YConnectKit/MonotonicTiming.swift TelAerox155/CSVCodec.swift \
+  TelAerox155/PhoneSensorSample.swift TelAerox155/SessionRecorder.swift \
+  TelAerox155/RecordingLibrary.swift TelAerox155/YConnectKit/BinaryReader.swift \
+  TelAerox155/YConnectKit/Checksum.swift TelAerox155/YConnectKit/Frame.swift \
+  TelAerox155/YConnectKit/Mapping.swift TelAerox155/YConnectKit/TelemetryDecoder.swift \
+  TelAerox155/YConnectKit/BLELogFormat.swift \
+  Tests/LiveActivityChecks.swift -o "$check_dir/live-activity-checks"
+"$check_dir/live-activity-checks"
+
 bash Tests/run-yamaha-pairing.sh "$check_dir/yamaha-proof"
